@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +22,9 @@ import (
 type AgentInfo struct {
 	Description string `json:"description"`
 
+	Instructions string `json:"-"`
+	IsSkill      bool   `json:"-"`
+
 	DeepseekTool    []deepseek.Tool   `json:"-"`
 	VolTool         []*model.Tool     `json:"-"`
 	OpenAITools     []openai.Tool     `json:"-"`
@@ -28,7 +33,11 @@ type AgentInfo struct {
 }
 
 type ToolsConf struct {
-	McpConfPath *string `json:"mcp_conf_path"`
+	McpConfPath       *string `json:"mcp_conf_path"`
+	SkillPath         *string `json:"skill_path"`
+	AllowedCommands   string  `json:"allowed_commands"`
+	CommandTimeoutSec int     `json:"command_timeout_sec"`
+	FileRootPath      *string `json:"file_root_path"`
 }
 
 var (
@@ -38,17 +47,70 @@ var (
 	GeminiTools   = make([]*genai.Tool, 0)
 
 	TaskTools     = sync.Map{}
+	SkillTools    = sync.Map{}
 	ToolsConfInfo = new(ToolsConf)
 )
 
 func InitToolsConf() {
+	flag.String("allowed_commands", "", "comma-separated executable allowlist")
+	flag.Int("command_timeout_sec", 60, "built-in command timeout in seconds")
+
 	ToolsConfInfo.McpConfPath = flag.String("mcp_conf_path", GetAbsPath("conf/mcp/mcp.json"), "mcp conf path")
+	ToolsConfInfo.SkillPath = flag.String("skill_path", GetAbsPath("conf/skills"), "skill directory path")
+	ToolsConfInfo.FileRootPath = flag.String("file_root_path", GetAbsPath("data/agent_files"), "built-in file operation root")
+}
+
+func applyParsedToolsFlags(flags *flag.FlagSet) {
+	if allowedCommandsFlag := flags.Lookup("allowed_commands"); allowedCommandsFlag != nil {
+		ToolsConfInfo.AllowedCommands = strings.TrimSpace(allowedCommandsFlag.Value.String())
+	}
+	if commandTimeoutFlag := flags.Lookup("command_timeout_sec"); commandTimeoutFlag != nil {
+		timeout, err := strconv.Atoi(commandTimeoutFlag.Value.String())
+		if err == nil {
+			ToolsConfInfo.CommandTimeoutSec = timeout
+		}
+	}
 }
 
 func EnvToolsConf() {
+	applyToolsDefaults()
 	if os.Getenv("MCP_CONF_PATH") != "" {
 		*ToolsConfInfo.McpConfPath = os.Getenv("MCP_CONF_PATH")
 	}
+	if os.Getenv("SKILLS_PATH") != "" {
+		*ToolsConfInfo.SkillPath = os.Getenv("SKILLS_PATH")
+	}
+	if os.Getenv("ALLOWED_COMMANDS") != "" {
+		ToolsConfInfo.AllowedCommands = os.Getenv("ALLOWED_COMMANDS")
+	}
+	if os.Getenv("COMMAND_TIMEOUT_SEC") != "" {
+		timeout, err := strconv.Atoi(os.Getenv("COMMAND_TIMEOUT_SEC"))
+		if err == nil {
+			ToolsConfInfo.CommandTimeoutSec = timeout
+		}
+	}
+	if os.Getenv("FILE_ROOT_PATH") != "" {
+		*ToolsConfInfo.FileRootPath = os.Getenv("FILE_ROOT_PATH")
+	}
+}
+
+func applyToolsDefaults() {
+	if ToolsConfInfo.McpConfPath == nil {
+		ToolsConfInfo.McpConfPath = stringPtr(GetAbsPath("conf/mcp/mcp.json"))
+	}
+	if ToolsConfInfo.SkillPath == nil {
+		ToolsConfInfo.SkillPath = stringPtr(GetAbsPath("conf/skills"))
+	}
+	if ToolsConfInfo.FileRootPath == nil {
+		ToolsConfInfo.FileRootPath = stringPtr(GetAbsPath("data/agent_files"))
+	}
+	if ToolsConfInfo.CommandTimeoutSec <= 0 {
+		ToolsConfInfo.CommandTimeoutSec = 60
+	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func InitTools() {
@@ -59,7 +121,7 @@ func InitTools() {
 
 		TaskTools.Range(func(key, value any) bool {
 			aInfo := value.(*AgentInfo)
-			if len(aInfo.DeepseekTool) == 0 || len(aInfo.VolTool) == 0 {
+			if !aInfo.IsSkill && (len(aInfo.DeepseekTool) == 0 || len(aInfo.VolTool) == 0) {
 				keysToDelete = append(keysToDelete, key)
 			}
 			return true
@@ -85,6 +147,8 @@ func InitTools() {
 	for _, mcpParam := range mcpParams {
 		InsertTools(mcpParam.Name)
 	}
+
+	InitSkills()
 }
 
 func InsertTools(clientName string) {
