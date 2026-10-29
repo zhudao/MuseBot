@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
@@ -67,6 +68,12 @@ func GetRobotProxyClient() *http.Client {
 
 	return &http.Client{
 		Transport: transport,
+		// Telegram update polling uses a 60s long poll (StartTelegramRobot sets
+		// u.Timeout = 60). Without a timeout a half-open connection keeps the
+		// request blocked forever: the process stays healthy, the socket stays
+		// ESTABLISHED, and the bot silently stops receiving updates. With a
+		// timeout the request fails and tgbotapi retries after 3 seconds.
+		Timeout: 90 * time.Second,
 	}
 }
 
@@ -87,7 +94,7 @@ func GetLLMProxyClient() *http.Client {
 	}
 }
 
-func FileRecognize(audioContent []byte) (string, error) {
+func FileRecognize(ctx context.Context, audioContent []byte) (string, error) {
 
 	client := BuildAsrClient()
 	client.Appid = conf.AudioConfInfo.VolAudioAppID
@@ -96,12 +103,12 @@ func FileRecognize(audioContent []byte) (string, error) {
 
 	asrResponse, err := client.RequestAsr(audioContent)
 	if err != nil {
-		logger.Error("fail to request asr ", "err", err)
+		logger.ErrorCtx(ctx, "fail to request asr ", "err", err)
 		return "", err
 	}
 
 	if len(asrResponse.Results) == 0 {
-		logger.Error("fail to request asr", "results", asrResponse.Results)
+		logger.ErrorCtx(ctx, "fail to request asr", "results", asrResponse.Results)
 		return "", errors.New("fail to request asr")
 	}
 

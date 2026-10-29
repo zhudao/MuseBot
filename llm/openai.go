@@ -26,6 +26,13 @@ type OpenAIReq struct {
 }
 
 func (d *OpenAIReq) GetModel(l *LLM) {
+	// utility routing and failover rungs pin their model; the user config
+	// is bypassed entirely
+	if l.modelOverride != "" {
+		l.Model = l.modelOverride
+		return
+	}
+
 	userInfo := db.GetCtxUserInfo(l.Ctx)
 	var llmConf *param.LLMConfig
 	model := ""
@@ -50,7 +57,7 @@ func (d *OpenAIReq) Send(ctx context.Context, l *LLM) error {
 
 	start := time.Now()
 
-	client := GetOpenAIClient(ctx, "txt")
+	client := GetOpenAIClientForType(l.txtProviderType())
 	request := openai.ChatCompletionRequest{
 		Model:  l.Model,
 		Stream: true,
@@ -185,7 +192,7 @@ func (d *OpenAIReq) GetMessage(role, msg string) {
 func (d *OpenAIReq) SyncSend(ctx context.Context, l *LLM) (string, error) {
 	start := time.Now()
 
-	client := GetOpenAIClient(ctx, "txt")
+	client := GetOpenAIClientForType(l.txtProviderType())
 
 	request := openai.ChatCompletionRequest{
 		Model:    l.Model,
@@ -365,6 +372,13 @@ func GenerateOpenAIText(ctx context.Context, audioContent []byte) (string, error
 	return resp.Text, nil
 }
 
+func init() {
+	RegisterRecognizer(param.OpenAi, func(ctx context.Context, audioContent []byte) (string, int, error) {
+		text, err := GenerateOpenAIText(ctx, audioContent)
+		return text, param.AudioTokenUsage, err
+	})
+}
+
 func OpenAITTS(ctx context.Context, content, encoding string) ([]byte, int, int, error) {
 	formatEncoding := encoding
 	if encoding != string(openai.SpeechResponseFormatOpus) && encoding != string(openai.SpeechResponseFormatAac) && encoding != string(openai.SpeechResponseFormatFlac) &&
@@ -410,8 +424,21 @@ func OpenAITTS(ctx context.Context, content, encoding string) ([]byte, int, int,
 	return data, db.EstimateTokens(content), utils.PCMDuration(len(data), 24000, 1, 16), nil
 }
 
+// openaiEndpoints maps provider types to their OpenAI-compatible
+// credentials and base URL (empty baseURL = official OpenAI endpoint).
+var openaiEndpoints = map[string]struct {
+	token   func() string
+	baseURL string
+}{
+	param.OpenAi:       {token: func() string { return conf.BaseConfInfo.OpenAIToken }},
+	param.Aliyun:       {token: func() string { return conf.BaseConfInfo.AliyunToken }, baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+	param.ChatAnyWhere: {token: func() string { return conf.BaseConfInfo.ChatAnyWhereToken }, baseURL: "https://api.chatanywhere.tech/v1"},
+	param.DeepSeek:     {token: func() string { return conf.BaseConfInfo.DeepseekToken }, baseURL: "https://api.deepseek.com/v1"},
+	param.Vol:          {token: func() string { return conf.BaseConfInfo.VolToken }, baseURL: "https://ark.cn-beijing.volces.com/api/v3"},
+	param.Gemini:       {token: func() string { return conf.BaseConfInfo.GeminiToken }, baseURL: "https://generativelanguage.googleapis.com/v1beta/openai"},
+}
+
 func GetOpenAIClient(ctx context.Context, clientType string) *openai.Client {
-	httpClient := utils.GetLLMProxyClient()
 	t := param.OpenAi
 	switch clientType {
 	case "txt":
@@ -424,26 +451,19 @@ func GetOpenAIClient(ctx context.Context, clientType string) *openai.Client {
 		t = utils.GetRecType(db.GetCtxUserInfo(ctx).LLMConfigRaw)
 	}
 
+	return GetOpenAIClientForType(t)
+}
+
+// GetOpenAIClientForType builds a client for one provider type; unknown
+// types fall back to the official OpenAI endpoint with no token.
+func GetOpenAIClientForType(t string) *openai.Client {
+	httpClient := utils.GetLLMProxyClient()
+
 	var token string
 	var specialLLMUrl string
-	switch t {
-	case param.OpenAi:
-		token = conf.BaseConfInfo.OpenAIToken
-	case param.Aliyun:
-		token = conf.BaseConfInfo.AliyunToken
-		specialLLMUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-	case param.ChatAnyWhere:
-		token = conf.BaseConfInfo.ChatAnyWhereToken
-		specialLLMUrl = "https://api.chatanywhere.tech/v1"
-	case param.DeepSeek:
-		token = conf.BaseConfInfo.DeepseekToken
-		specialLLMUrl = "https://api.deepseek.com/v1"
-	case param.Vol:
-		token = conf.BaseConfInfo.VolToken
-		specialLLMUrl = "https://ark.cn-beijing.volces.com/api/v3"
-	case param.Gemini:
-		token = conf.BaseConfInfo.GeminiToken
-		specialLLMUrl = "https://generativelanguage.googleapis.com/v1beta/openai"
+	if ep, ok := openaiEndpoints[t]; ok {
+		token = ep.token()
+		specialLLMUrl = ep.baseURL
 	}
 
 	openaiConfig := openai.DefaultConfig(token)

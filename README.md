@@ -52,6 +52,10 @@ Thanks to the Reddit community as well, even though a few of my subreddits got b
   see [doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/admin.md).
 - 🌛 **Register**: With the service registration module, robot instances can be automatically registered to the
   registration center [doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/register.md)
+- 🧩 **Plugins**: Wire up new LLM providers and chat channels through the provider / channel registries — one file per
+  extension, see [doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/plugin.md)
+- 🛟 **Model-layer resilience**: automatically fail over from the primary model to other configured providers, and route
+  internal calls to a cheap utility model, see [doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/failover.md)
 - 🌈 **Metrics**: Support Metrics for monitoring,
   see [doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/metrics.md).
 - 🐶 **Cron**: Support Cron to trigger LLM,
@@ -214,6 +218,63 @@ If you use parameter. Please use lower letter and underscore. for example: ./Mus
 | **SEND_MCP_RES**                | send mcp result to user                                                                      | false                                                  |
 | **TASK_AUTO_APPROVE**           | auto approve task tool operations (commands/config changes) without /y confirmation          | false                                                  |
 | **DEFAULT_MODEL**               | default txt model                                                                            | -                                                      |
+| **CONFIG**                      | path to a json config file; file values beat command-line flags, env vars beat the file       | -                                                      |
+
+### config file
+
+Instead of long flag/env lists, put your configuration in a json file and point the bot at it with `-conf` or the `CONFIG` env var:
+
+```sh
+go run main.go -conf=conf/examples/telegram_deepseek.json
+
+# docker: mount the config file
+docker run -d -v /home/user/data:/app/data \
+  -v /home/user/mybot.json:/app/mybot.json \
+  -e CONFIG="/app/mybot.json" \
+  -p 36060:36060 -p 18080:18080 --name my-bot jackyin0822/musebot:latest
+```
+
+Two formats are supported:
+
+**Flat** (recommended — top-level keys use the lowercased-underscore form of the env names):
+
+```json
+{
+  "telegram_bot_token": "your-telegram-bot-token",
+  "type": "deepseek",
+  "deepseek_token": "your-deepseek-api-key",
+  "smart_mode": true,
+  "admin_user_ids": {"123456789": true}
+}
+```
+
+**Sectioned** (same layout as the config persisted by the [admin panel](static/doc/admin.md): `base`/`llm`/`audio`/`photo`/`video`/`rag`/`tools`/`register` sections for fine-grained control):
+
+```json
+{
+  "base": {
+    "telegram_bot_token": "your-telegram-bot-token",
+    "type": "deepseek",
+    "deepseek_token": "your-deepseek-api-key"
+  },
+  "llm": {
+    "temperature": 0.7
+  }
+}
+```
+
+Precedence: **env vars > config file > command-line flags > defaults**. Keys missing from the file keep their defaults; restart to apply changes.
+
+[conf/examples/](conf/examples/) ships a few classic configs ready to copy and edit:
+
+| File                            | Scenario                                                        |
+|---------------------------------|------------------------------------------------------------------|
+| `telegram_deepseek.json`        | Telegram + DeepSeek, simplest setup                              |
+| `telegram_glm_thirdparty.json`  | Telegram + Zhipu GLM (third-party OpenAI-compatible), smart_mode + task auto-approval on |
+| `discord_openai.json`           | Discord + OpenAI, function call + streaming on                   |
+| `lark_aliyun.json`              | Lark + Aliyun Bailian                                            |
+| `dingtalk_deepseek.json`        | DingTalk + DeepSeek, smart_mode on                               |
+| `full_nested.json`              | Full sectioned example (base + llm + tools)                      |
 
 ### CUSTOM_URL
 
@@ -239,6 +300,7 @@ choose a language for bot, English (`en`), Chinese (`zh`), Russian (`ru`).
 [photo_conf](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/photoconf.md)      
 [video_conf](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/videoconf.md)      
 [audio_conf](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/audioconf.md)
+[advanced_conf (third-party models / smart_mode / task auto-approval)](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/advanced.md)
 
 ## Command
 
@@ -327,12 +389,10 @@ the MuseBotAdmin management platform. Both restart automatically if they crash.
      voice, video and skill features.
 
 4. **First admin login**
-   A random password for the `admin` account is generated on first start and
-   printed once in the container log:
-   ```sh
-    docker logs my-bot 2>&1 | grep "password is shown ONCE"
-   ```
-   Log in at `http://<host>:18080` and change the password (see the
+   The default account `admin` / `admin` is created on first start. After
+   login the admin UI shows a change-password prompt (you can click "Later"
+   to skip, but changing it soon is recommended).
+   Log in at `http://<host>:18080` (see the
    [admin doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/admin.md)).
 
 ## Task web search

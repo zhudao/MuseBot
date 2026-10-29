@@ -67,7 +67,7 @@ type BaseConf struct {
 	MaxUserChat       int    `json:"max_user_chat"`
 	HTTPHost          string `json:"http_host"`
 	UseTools          bool   `json:"use_tools"`
-	MaxQAPair         int    `json:"max_qa_pari"`
+	MaxQAPair         int    `json:"max_qa_pair"`
 	Character         string `json:"character"`
 	SmartMode         bool   `json:"smart_mode"`
 	ContextExpireTime int    `json:"context_expire_time"`
@@ -75,6 +75,15 @@ type BaseConf struct {
 	EnableAutoCompress bool   `json:"enable_auto_compress"`
 	CompressThreshold  int    `json:"compress_threshold"`
 	CompressKeepPairs  int    `json:"compress_keep_pairs"`
+	EnableMemory       bool   `json:"enable_memory"`
+	MemoryMaxCount     int    `json:"memory_max_count"`
+	MemoryInterval     int    `json:"memory_interval"`
+	EnableTyping       bool   `json:"enable_typing"`
+	EnableReaction     bool   `json:"enable_reaction"`
+	EnableFailover     bool   `json:"enable_failover"`
+	FailoverProviders  string `json:"failover_providers"`
+	UtilityType        string `json:"utility_type"`
+	UtilityModel       string `json:"utility_model"`
 	Powered            string `json:"powered"`
 	SendMcpRes         bool   `json:"send_mcp_res"`
 	SendMcpMediaToLLM  bool   `json:"send_mcp_media_to_llm"`
@@ -84,8 +93,9 @@ type BaseConf struct {
 	LLMOptionParam     bool   `json:"llm_option_param"`
 	ImagePath          string `json:"image_path"`
 	IsStreaming        bool   `json:"is_streaming"`
-	TaskAutoApprove   bool   `json:"task_auto_approve"`
-	MediaRetentionDays int   `json:"media_retention_days"`
+	TaskAutoApprove    bool   `json:"task_auto_approve"`
+	TaskMaxExecLoops   int    `json:"task_max_execution_loops"`
+	MediaRetentionDays int    `json:"media_retention_days"`
 
 	CrtFile string `json:"crt_file"`
 	KeyFile string `json:"key_file"`
@@ -136,12 +146,21 @@ func InitConf() {
 	flag.StringVar(&BaseConfInfo.QQOneBotReceiveToken, "qq_one_bot_receive_token", "MuseBot", "onebot receive token")
 	flag.StringVar(&BaseConfInfo.QQOneBotSendToken, "qq_one_bot_send_token", "MuseBot", "onebot send token")
 	flag.StringVar(&BaseConfInfo.QQOneBotHttpServer, "qq_one_bot_http_server", "http://127.0.0.1:3000", "onebot http server")
-	flag.BoolVar(&BaseConfInfo.SmartMode, "smart_mode", false, "Smart mode")
+	flag.BoolVar(&BaseConfInfo.SmartMode, "smart_mode", true, "Smart mode")
 	flag.IntVar(&BaseConfInfo.ContextExpireTime, "context_expire_time", 86400, "Context expire time")
 
 	flag.BoolVar(&BaseConfInfo.EnableAutoCompress, "enable_auto_compress", true, "enable auto compress context history")
 	flag.IntVar(&BaseConfInfo.CompressThreshold, "compress_threshold", 8000, "accumulated context token that triggers compression")
 	flag.IntVar(&BaseConfInfo.CompressKeepPairs, "compress_keep_pairs", 3, "recent qa pairs kept uncompressed")
+	flag.BoolVar(&BaseConfInfo.EnableMemory, "enable_memory", true, "enable long-term memory extraction and injection")
+	flag.IntVar(&BaseConfInfo.MemoryMaxCount, "memory_max_count", 20, "max long-term memory items kept per user")
+	flag.IntVar(&BaseConfInfo.MemoryInterval, "memory_interval", 3600, "min seconds between two memory extractions per user")
+	flag.BoolVar(&BaseConfInfo.EnableTyping, "enable_typing", true, "send typing indicators while the LLM is generating (platforms that support it)")
+	flag.BoolVar(&BaseConfInfo.EnableReaction, "enable_reaction", true, "react on the user's message while processing and on completion (platforms that support it)")
+	flag.BoolVar(&BaseConfInfo.EnableFailover, "enable_failover", true, "after the primary provider fails, retry once on each other configured OpenAI-compatible provider")
+	flag.StringVar(&BaseConfInfo.FailoverProviders, "failover_providers", "", "explicit failover chain, comma separated (default: all other configured providers, ollama excluded)")
+	flag.StringVar(&BaseConfInfo.UtilityType, "utility_type", "", "cheap provider for internal calls (history compression, memory, smart mode)")
+	flag.StringVar(&BaseConfInfo.UtilityModel, "utility_model", "", "model used for internal utility calls; empty disables utility routing")
 
 	flag.StringVar(&BaseConfInfo.DeepseekToken, "deepseek_token", "", "deepseek auth token")
 	flag.StringVar(&BaseConfInfo.OpenAIToken, "openai_token", "", "openai auth token")
@@ -168,7 +187,7 @@ func InitConf() {
 	flag.IntVar(&BaseConfInfo.MaxUserChat, "max_user_chat", 2, "max chat per user")
 	flag.StringVar(&BaseConfInfo.HTTPHost, "http_host", ":36060", "http server port")
 	flag.BoolVar(&BaseConfInfo.UseTools, "use_tools", false, "use function tools")
-	flag.IntVar(&BaseConfInfo.MaxQAPair, "max_qa_pari", 100, "max qa pair")
+	flag.IntVar(&BaseConfInfo.MaxQAPair, "max_qa_pair", 100, "max qa pair")
 	flag.StringVar(&BaseConfInfo.Character, "character", "", "ai's character")
 	flag.StringVar(&BaseConfInfo.Powered, "powered", "", "powered by")
 	flag.StringVar(&BaseConfInfo.ImagePath, "image_path", "./conf/img/", "image path")
@@ -185,10 +204,12 @@ func InitConf() {
 	flag.BoolVar(&BaseConfInfo.LLMOptionParam, "llm_option_param", false, "llm option param")
 	flag.BoolVar(&BaseConfInfo.IsStreaming, "is_streaming", false, "is streaming")
 	flag.BoolVar(&BaseConfInfo.TaskAutoApprove, "task_auto_approve", false, "auto approve task tool operations without /y")
+	flag.IntVar(&BaseConfInfo.TaskMaxExecLoops, "task_max_execution_loops", 3, "how many EXECUTE rounds a task may run before it is aborted")
 
 	allowedUserIds := flag.String("allowed_user_ids", "", "allowed user ids")
 	allowedGroupIds := flag.String("allowed_group_ids", "", "allowed group ids")
 	adminUserIds := flag.String("admin_user_ids", "", "admin user ids")
+	confPath := flag.String("conf", "", "json config file path; file values beat flags, env vars beat the file")
 
 	BaseConfInfo.AllowedUserIds = make(map[string]bool)
 	BaseConfInfo.AllowedGroupIds = make(map[string]bool)
@@ -206,6 +227,289 @@ func InitConf() {
 	flag.Parse()
 	applyParsedToolsFlags(flag.CommandLine)
 
+	loadCustomConf(*confPath)
+
+	applyEnvConf(allowedUserIds, allowedGroupIds, adminUserIds)
+
+	EnvAudioConf()
+	EnvRagConf()
+	EnvLLMConf()
+	EnvPhotoConf()
+	EnvToolsConf()
+	EnvVideoConf()
+	EnvRegisterConf()
+
+	logConf(*allowedUserIds, *allowedGroupIds, *adminUserIds)
+	SaveConf()
+
+}
+
+func logConf(allowedUserIds, allowedGroupIds, adminUserIds string) {
+	if BaseConfInfo.AllowedUserIds == nil {
+		BaseConfInfo.AllowedUserIds = make(map[string]bool)
+	}
+	if BaseConfInfo.AllowedGroupIds == nil {
+		BaseConfInfo.AllowedGroupIds = make(map[string]bool)
+	}
+	if BaseConfInfo.AdminUserIds == nil {
+		BaseConfInfo.AdminUserIds = make(map[string]bool)
+	}
+
+	for _, userIdStr := range strings.Split(allowedUserIds, ",") {
+		if userIdStr == "" {
+			continue
+		}
+		BaseConfInfo.AllowedUserIds[userIdStr] = true
+	}
+
+	for _, groupIdStr := range strings.Split(allowedGroupIds, ",") {
+		if groupIdStr == "" {
+			continue
+		}
+		BaseConfInfo.AllowedGroupIds[groupIdStr] = true
+	}
+
+	for _, adminIdStr := range strings.Split(adminUserIds, ",") {
+		if adminIdStr == "" {
+			continue
+		}
+		BaseConfInfo.AdminUserIds[adminIdStr] = true
+	}
+
+	logger.Info("CONF", "TelegramBotToken", BaseConfInfo.TelegramBotToken)
+	logger.Info("CONF", "DiscordBotToken", BaseConfInfo.DiscordBotToken)
+	logger.Info("CONF", "SlackBotToken", BaseConfInfo.SlackBotToken)
+	logger.Info("CONF", "SlackAppToken", BaseConfInfo.SlackAppToken)
+	logger.Info("CONF", "LarkAPPID", BaseConfInfo.LarkAPPID)
+	logger.Info("CONF", "LarkAppSecret", BaseConfInfo.LarkAppSecret)
+	logger.Info("CONF", "DingClientId", BaseConfInfo.DingClientId)
+	logger.Info("CONF", "DingClientSecret", BaseConfInfo.DingClientSecret)
+	logger.Info("CONF", "ComWechatToken", BaseConfInfo.ComWechatToken)
+	logger.Info("CONF", "ComWechatEncodingAESKey", BaseConfInfo.ComWechatEncodingAESKey)
+	logger.Info("CONF", "ComWechatCorpID", BaseConfInfo.ComWechatCorpID)
+	logger.Info("CONF", "ComWechatSecret", BaseConfInfo.ComWechatSecret)
+	logger.Info("CONF", "ComWechatAgentID", BaseConfInfo.ComWechatAgentID)
+	logger.Info("CONF", "WechatToken", BaseConfInfo.WechatToken)
+	logger.Info("CONF", "WechatAppSecret", BaseConfInfo.WechatAppSecret)
+	logger.Info("CONF", "WechatAppID", BaseConfInfo.WechatAppID)
+	logger.Info("CONF", "WechatActive", BaseConfInfo.WechatActive)
+	logger.Info("CONF", "WechatEncodingAESKey", BaseConfInfo.WechatEncodingAESKey)
+	logger.Info("CONF", "QQAppID", BaseConfInfo.QQAppID)
+	logger.Info("CONF", "QQAppSecret", BaseConfInfo.QQAppSecret)
+	logger.Info("CONF", "QQOneBotHttpServer", BaseConfInfo.QQOneBotHttpServer)
+	logger.Info("CONF", "QQOneBotReceiveToken", BaseConfInfo.QQOneBotReceiveToken)
+	logger.Info("CONF", "QQOneBotSendToken", BaseConfInfo.QQOneBotSendToken)
+	logger.Info("CONF", "DeepseekToken", BaseConfInfo.DeepseekToken)
+	logger.Info("CONF", "CustomUrl", BaseConfInfo.CustomUrl)
+	logger.Info("CONF", "Type", BaseConfInfo.Type)
+	logger.Info("CONF", "VolcAK", BaseConfInfo.VolcAK)
+	logger.Info("CONF", "VolcSK", BaseConfInfo.VolcSK)
+	logger.Info("CONF", "AliyunToken", BaseConfInfo.AliyunToken)
+	logger.Info("CONF", "DBType", BaseConfInfo.DBType)
+	logger.Info("CONF", "DBConf", BaseConfInfo.DBConf)
+	logger.Info("CONF", "AllowedUserIds", BaseConfInfo.AllowedUserIds)
+	logger.Info("CONF", "AllowedGroupIds", BaseConfInfo.AllowedGroupIds)
+	logger.Info("CONF", "LLMProxy", BaseConfInfo.LLMProxy)
+	logger.Info("CONF", "RobotProxy", BaseConfInfo.RobotProxy)
+	logger.Info("CONF", "Lang", BaseConfInfo.Lang)
+	logger.Info("CONF", "TokenPerUser", BaseConfInfo.TokenPerUser)
+	logger.Info("CONF", "MaxUserChat", BaseConfInfo.MaxUserChat)
+	logger.Info("CONF", "HTTPHost", BaseConfInfo.HTTPHost)
+	logger.Info("CONF", "UseTools", BaseConfInfo.UseTools)
+	logger.Info("CONF", "OpenAIToken", BaseConfInfo.OpenAIToken)
+	logger.Info("CONF", "GeminiToken", BaseConfInfo.GeminiToken)
+	logger.Info("CONF", "ErnieAK", BaseConfInfo.ErnieAK)
+	logger.Info("CONF", "ErnieSK", BaseConfInfo.ErnieSK)
+	logger.Info("CONF", "VolToken", BaseConfInfo.VolToken)
+	logger.Info("CONF", "CrtFile", BaseConfInfo.CrtFile)
+	logger.Info("CONF", "KeyFile", BaseConfInfo.KeyFile)
+	logger.Info("CONF", "CaFile", BaseConfInfo.CaFile)
+	logger.Info("CONF", "MediaType", BaseConfInfo.MediaType)
+	logger.Info("CONF", "BotName", BaseConfInfo.BotName)
+	logger.Info("CONF", "MaxQAPair", BaseConfInfo.MaxQAPair)
+	logger.Info("CONF", "SmartMode", BaseConfInfo.SmartMode)
+	logger.Info("CONF", "Powered", BaseConfInfo.Powered)
+	logger.Info("CONF", "Character", BaseConfInfo.Character)
+	logger.Info("CONF", "ContextExpireTime", BaseConfInfo.ContextExpireTime)
+	logger.Info("CONF", "EnableAutoCompress", BaseConfInfo.EnableAutoCompress)
+	logger.Info("CONF", "CompressThreshold", BaseConfInfo.CompressThreshold)
+	logger.Info("CONF", "CompressKeepPairs", BaseConfInfo.CompressKeepPairs)
+	logger.Info("CONF", "EnableMemory", BaseConfInfo.EnableMemory)
+	logger.Info("CONF", "MemoryMaxCount", BaseConfInfo.MemoryMaxCount)
+	logger.Info("CONF", "MemoryInterval", BaseConfInfo.MemoryInterval)
+	logger.Info("CONF", "EnableTyping", BaseConfInfo.EnableTyping)
+	logger.Info("CONF", "EnableReaction", BaseConfInfo.EnableReaction)
+	logger.Info("CONF", "EnableFailover", BaseConfInfo.EnableFailover)
+	logger.Info("CONF", "FailoverProviders", BaseConfInfo.FailoverProviders)
+	logger.Info("CONF", "UtilityType", BaseConfInfo.UtilityType)
+	logger.Info("CONF", "UtilityModel", BaseConfInfo.UtilityModel)
+	logger.Info("CONF", "SendMcpRes", BaseConfInfo.SendMcpRes)
+	logger.Info("CONF", "DefaultModel", BaseConfInfo.DefaultModel)
+	logger.Info("CONF", "LLMRetryTimes", BaseConfInfo.LLMRetryTimes)
+	logger.Info("CONF", "LLMRetryInterval", BaseConfInfo.LLMRetryInterval)
+	logger.Info("CONF", "LLMOptionParam", BaseConfInfo.LLMOptionParam)
+	logger.Info("CONF", "ImagePath", BaseConfInfo.ImagePath)
+	logger.Info("CONF", "IsStreaming", BaseConfInfo.IsStreaming)
+	logger.Info("CONF", "TaskAutoApprove", BaseConfInfo.TaskAutoApprove)
+	logger.Info("CONF", "TaskMaxExecLoops", BaseConfInfo.TaskMaxExecLoops)
+	logger.Info("CONF", "SendMcpMediaToLLM", BaseConfInfo.SendMcpMediaToLLM)
+
+	logger.Info("AUDIO_CONF", "AudioAppID", AudioConfInfo.VolAudioAppID)
+	logger.Info("AUDIO_CONF", "AudioToken", AudioConfInfo.VolAudioToken)
+	logger.Info("AUDIO_CONF", "AudioCluster", AudioConfInfo.VolAudioRecCluster)
+	logger.Info("AUDIO_CONF", "AudioVoiceType", AudioConfInfo.VolAudioVoiceType)
+	logger.Info("AUDIO_CONF", "AudioTTSCluster", AudioConfInfo.VolAudioTTSCluster)
+	logger.Info("AUDIO_CONF", "GeminiAudioModel", AudioConfInfo.GeminiAudioModel)
+	logger.Info("AUDIO_CONF", "GeminiVoiceName", AudioConfInfo.GeminiVoiceName)
+	logger.Info("AUDIO_CONF", "OpenAIAudioModel", AudioConfInfo.OpenAIAudioModel)
+	logger.Info("AUDIO_CONF", "OpenAIVoiceName", AudioConfInfo.OpenAIVoiceName)
+	logger.Info("AUDIO_CONF", "TTSType", AudioConfInfo.TTSType)
+	logger.Info("AUDIO_CONF", "VolEndSmoothWindow", AudioConfInfo.VolEndSmoothWindow)
+	logger.Info("AUDIO_CONF", "VolTTSSpeaker", AudioConfInfo.VolTTSSpeaker)
+	logger.Info("AUDIO_CONF", "VolBotName", AudioConfInfo.VolBotName)
+	logger.Info("AUDIO_CONF", "VolSystemRole", AudioConfInfo.VolSystemRole)
+	logger.Info("AUDIO_CONF", "VolSpeakingStyle", AudioConfInfo.VolSpeakingStyle)
+	logger.Info("AUDIO_CONF", "AliyunAudioModel", AudioConfInfo.AliyunAudioModel)
+	logger.Info("AUDIO_CONF", "AliyunAudioVoice", AudioConfInfo.AliyunAudioVoice)
+	logger.Info("AUDIO_CONF", "AliyunAudioRecModel", AudioConfInfo.AliyunAudioRecModel)
+
+	logger.Info("RAG_CONF", "EmbeddingType", RagConfInfo.EmbeddingType)
+	logger.Info("RAG_CONF", "KnowledgePath", RagConfInfo.KnowledgePath)
+	logger.Info("RAG_CONF", "VectorDBType", RagConfInfo.VectorDBType)
+	logger.Info("RAG_CONF", "ChromaURL", RagConfInfo.ChromaURL)
+	logger.Info("RAG_CONF", "ChromaSpace", RagConfInfo.Space)
+	logger.Info("RAG_CONF", "MilvusURL", RagConfInfo.MilvusURL)
+	logger.Info("RAG_CONF", "WeaviateURL", RagConfInfo.WeaviateURL)
+	logger.Info("RAG_CONF", "WeaviateScheme", RagConfInfo.WeaviateScheme)
+	logger.Info("RAG_CONF", "QdrantHost", RagConfInfo.QdrantHost)
+	logger.Info("RAG_CONF", "QdrantPort", RagConfInfo.QdrantPort)
+	logger.Info("RAG_CONF", "QdrantUseTLS", RagConfInfo.QdrantUseTLS)
+
+	logger.Info("PHOTO_CONF", "ReqKey", PhotoConfInfo.ReqKey)
+	logger.Info("PHOTO_CONF", "ModelVersion", PhotoConfInfo.ModelVersion)
+	logger.Info("PHOTO_CONF", "ReqScheduleConf", PhotoConfInfo.ReqScheduleConf)
+	logger.Info("PHOTO_CONF", "Seed", PhotoConfInfo.Seed)
+	logger.Info("PHOTO_CONF", "Width", PhotoConfInfo.Width)
+	logger.Info("PHOTO_CONF", "Height", PhotoConfInfo.Height)
+	logger.Info("PHOTO_CONF", "Scale", PhotoConfInfo.Scale)
+	logger.Info("PHOTO_CONF", "DDIMSteps", PhotoConfInfo.DDIMSteps)
+	logger.Info("PHOTO_CONF", "UsePreLLM", PhotoConfInfo.UsePreLLM)
+	logger.Info("PHOTO_CONF", "UseSr", PhotoConfInfo.UseSr)
+	logger.Info("PHOTO_CONF", "ReturnUrl", PhotoConfInfo.ReturnUrl)
+	logger.Info("PHOTO_CONF", "AddLogo", PhotoConfInfo.AddLogo)
+	logger.Info("PHOTO_CONF", "Position", PhotoConfInfo.Position)
+	logger.Info("PHOTO_CONF", "Language", PhotoConfInfo.Language)
+	logger.Info("PHOTO_CONF", "Opacity", PhotoConfInfo.Opacity)
+	logger.Info("PHOTO_CONF", "LogoTextContent", PhotoConfInfo.LogoTextContent)
+	logger.Info("PHOTO_CONF", "GeminiImageModel", PhotoConfInfo.GeminiImageModel)
+	logger.Info("PHOTO_CONF", "GeminiRecModel", PhotoConfInfo.GeminiRecModel)
+	logger.Info("PHOTO_CONF", "OpenAIImageStyle", PhotoConfInfo.OpenAIImageStyle)
+	logger.Info("PHOTO_CONF", "OpenAIImageModel", PhotoConfInfo.OpenAIImageModel)
+	logger.Info("PHOTO_CONF", "OpenAIImageSize", PhotoConfInfo.OpenAIImageSize)
+	logger.Info("PHOTO_CONF", "OpenAIRecModel", PhotoConfInfo.OpenAIRecModel)
+	logger.Info("PHOTO_CONF", "VolImageModel", PhotoConfInfo.VolImageModel)
+	logger.Info("PHOTO_CONF", "VolRecModel", PhotoConfInfo.VolRecModel)
+	logger.Info("PHOTO_CONF", "AliyunImageModel", PhotoConfInfo.AliyunImageModel)
+	logger.Info("PHOTO_CONF", "AliyunRecModel", PhotoConfInfo.AliyunRecModel)
+
+	logger.Info("VIDEO_CONF", "VOL_VIDEO_MODEL", VideoConfInfo.VolVideoModel)
+	logger.Info("VIDEO_CONF", "RADIO", VideoConfInfo.Radio)
+	logger.Info("VIDEO_CONF", "DURATION", VideoConfInfo.Duration)
+	logger.Info("VIDEO_CONF", "FPS", VideoConfInfo.FPS)
+	logger.Info("VIDEO_CONF", "RESOLUTION", VideoConfInfo.Resolution)
+	logger.Info("VIDEO_CONF", "WATERMARK", VideoConfInfo.Watermark)
+	logger.Info("AUDIO_CONF", "GeminiVideoModel", VideoConfInfo.GeminiVideoModel)
+	logger.Info("AUDIO_CONF", "AliyunVideoModel", VideoConfInfo.AliyunVideoModel)
+
+	logger.Info("REGISTER_CONF", "Type", RegisterConfInfo.Type)
+	logger.Info("REGISTER_CONF", "EtcdURLs", RegisterConfInfo.EtcdURLs)
+	logger.Info("REGISTER_CONF", "EtcdUsername", RegisterConfInfo.EtcdUsername)
+	logger.Info("REGISTER_CONF", "EtcdPassword", RegisterConfInfo.EtcdPassword)
+
+	logger.Info("LLM_CONF", "FrequencyPenalty", LLMConfInfo.FrequencyPenalty)
+	logger.Info("LLM_CONF", "MaxTokens", LLMConfInfo.MaxTokens)
+	logger.Info("LLM_CONF", "PresencePenalty", LLMConfInfo.PresencePenalty)
+	logger.Info("LLM_CONF", "Temperature", LLMConfInfo.Temperature)
+	logger.Info("LLM_CONF", "TopP", LLMConfInfo.TopP)
+	logger.Info("LLM_CONF", "Stop", LLMConfInfo.Stop)
+	logger.Info("LLM_CONF", "LogProbs", LLMConfInfo.LogProbs)
+	logger.Info("LLM_CONF", "TopLogProbs", LLMConfInfo.TopLogProbs)
+
+	logger.Info("TOOLS_CONF", "McpConfPath", *ToolsConfInfo.McpConfPath)
+}
+
+// loadCustomConf applies the json config file given via the -conf flag or the
+// CONFIG env var (the flag wins when both are set). A flat file (top-level
+// base keys only) or the same sectioned layout as the admin-persisted config
+// (base/audio/llm/photo/rag/video/register/tools) both work. File values
+// override flag defaults; environment variables applied afterwards still take
+// precedence.
+func loadCustomConf(flagValue string) {
+	path := strings.TrimSpace(flagValue)
+	if path == "" {
+		path = strings.TrimSpace(os.Getenv("CONFIG"))
+	}
+	if path == "" {
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		logger.Fatal("read config file fail", "path", path, "err", err)
+		return
+	}
+
+	m := make(map[string]interface{})
+	if err := json.Unmarshal(data, &m); err != nil {
+		logger.Fatal("parse config file fail", "path", path, "err", err)
+		return
+	}
+
+	section, nested := m["base"]
+	if !nested {
+		// flat file: every top-level key is a base config key
+		section = m
+	}
+	sectionMap, ok := section.(map[string]interface{})
+	if !ok {
+		logger.Fatal("invalid config file format", "path", path)
+		return
+	}
+
+	applyLegacyConfKeys(sectionMap)
+	if _, err := TransferMapToConf(sectionMap, BaseConfInfo); err != nil {
+		logger.Fatal("transfer config file to base conf fail", "path", path, "err", err)
+		return
+	}
+
+	if nested {
+		for name, target := range map[string]interface{}{
+			"audio":    AudioConfInfo,
+			"llm":      LLMConfInfo,
+			"photo":    PhotoConfInfo,
+			"rag":      RagConfInfo,
+			"video":    VideoConfInfo,
+			"register": RegisterConfInfo,
+			"tools":    ToolsConfInfo,
+		} {
+			v, ok := m[name].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if _, err := TransferMapToConf(v, target); err != nil {
+				logger.Fatal("transfer config file to conf fail", "path", path, "section", name, "err", err)
+				return
+			}
+		}
+	}
+
+	logger.Info("CONF", "ConfFile", path)
+}
+
+// applyEnvConf applies environment variable overrides on top of flag
+// defaults and any loaded config file. Extracted from InitConf so tests
+// can exercise single variables in isolation.
+func applyEnvConf(allowedUserIds, allowedGroupIds, adminUserIds *string) {
 	if os.Getenv("TELEGRAM_BOT_TOKEN") != "" {
 		BaseConfInfo.TelegramBotToken = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
@@ -292,14 +596,21 @@ func InitConf() {
 
 	if os.Getenv("QQ_ONEBOT_SEND_TOKEN") != "" {
 		BaseConfInfo.QQOneBotSendToken = os.Getenv("QQ_ONEBOT_SEND_TOKEN")
+	} else if os.Getenv("QQ_ONE_BOT_SEND_TOKEN") != "" {
+		// alias matching the flag/json spelling qq_one_bot_send_token
+		BaseConfInfo.QQOneBotSendToken = os.Getenv("QQ_ONE_BOT_SEND_TOKEN")
 	}
 
 	if os.Getenv("QQ_ONEBOT_RECEIVE_TOKEN") != "" {
 		BaseConfInfo.QQOneBotReceiveToken = os.Getenv("QQ_ONEBOT_RECEIVE_TOKEN")
+	} else if os.Getenv("QQ_ONE_BOT_RECEIVE_TOKEN") != "" {
+		BaseConfInfo.QQOneBotReceiveToken = os.Getenv("QQ_ONE_BOT_RECEIVE_TOKEN")
 	}
 
 	if os.Getenv("QQ_ONEBOT_HTTP_SERVER") != "" {
 		BaseConfInfo.QQOneBotHttpServer = os.Getenv("QQ_ONEBOT_HTTP_SERVER")
+	} else if os.Getenv("QQ_ONE_BOT_HTTP_SERVER") != "" {
+		BaseConfInfo.QQOneBotHttpServer = os.Getenv("QQ_ONE_BOT_HTTP_SERVER")
 	}
 
 	if os.Getenv("DEEPSEEK_TOKEN") != "" {
@@ -308,6 +619,10 @@ func InitConf() {
 
 	if os.Getenv("CUSTOM_URL") != "" {
 		BaseConfInfo.CustomUrl = os.Getenv("CUSTOM_URL")
+	}
+
+	if os.Getenv("CUSTOM_PATH") != "" {
+		BaseConfInfo.CustomPath = os.Getenv("CUSTOM_PATH")
 	}
 
 	if os.Getenv("BOT_NAME") != "" {
@@ -441,6 +756,34 @@ func InitConf() {
 		BaseConfInfo.CompressKeepPairs, _ = strconv.Atoi(os.Getenv("COMPRESS_KEEP_PAIRS"))
 	}
 
+	if v := os.Getenv("ENABLE_MEMORY"); v != "" {
+		BaseConfInfo.EnableMemory = v != "false"
+	}
+	if os.Getenv("MEMORY_MAX_COUNT") != "" {
+		BaseConfInfo.MemoryMaxCount, _ = strconv.Atoi(os.Getenv("MEMORY_MAX_COUNT"))
+	}
+	if os.Getenv("MEMORY_INTERVAL") != "" {
+		BaseConfInfo.MemoryInterval, _ = strconv.Atoi(os.Getenv("MEMORY_INTERVAL"))
+	}
+	if v := os.Getenv("ENABLE_TYPING"); v != "" {
+		BaseConfInfo.EnableTyping = v != "false"
+	}
+	if v := os.Getenv("ENABLE_REACTION"); v != "" {
+		BaseConfInfo.EnableReaction = v != "false"
+	}
+	if v := os.Getenv("ENABLE_FAILOVER"); v != "" {
+		BaseConfInfo.EnableFailover = v != "false"
+	}
+	if os.Getenv("FAILOVER_PROVIDERS") != "" {
+		BaseConfInfo.FailoverProviders = os.Getenv("FAILOVER_PROVIDERS")
+	}
+	if os.Getenv("UTILITY_TYPE") != "" {
+		BaseConfInfo.UtilityType = os.Getenv("UTILITY_TYPE")
+	}
+	if os.Getenv("UTILITY_MODEL") != "" {
+		BaseConfInfo.UtilityModel = os.Getenv("UTILITY_MODEL")
+	}
+
 	if os.Getenv("POWERED") != "" {
 		BaseConfInfo.Powered = os.Getenv("POWERED")
 	}
@@ -481,205 +824,15 @@ func InitConf() {
 		BaseConfInfo.TaskAutoApprove = os.Getenv("TASK_AUTO_APPROVE") == "true"
 	}
 
+	if os.Getenv("TASK_MAX_EXECUTION_LOOPS") != "" {
+		if loops, err := strconv.Atoi(os.Getenv("TASK_MAX_EXECUTION_LOOPS")); err == nil {
+			BaseConfInfo.TaskMaxExecLoops = loops
+		}
+	}
+
 	if os.Getenv("SEND_MCP_MEDIA_TO_LLM") == "true" {
 		BaseConfInfo.SendMcpMediaToLLM = true
 	}
-
-	EnvAudioConf()
-	EnvRagConf()
-	EnvLLMConf()
-	EnvPhotoConf()
-	EnvToolsConf()
-	EnvVideoConf()
-	EnvRegisterConf()
-
-	logConf(*allowedUserIds, *allowedGroupIds, *adminUserIds)
-	SaveConf()
-
-}
-
-func logConf(allowedUserIds, allowedGroupIds, adminUserIds string) {
-	if BaseConfInfo.AllowedUserIds == nil {
-		BaseConfInfo.AllowedUserIds = make(map[string]bool)
-	}
-	if BaseConfInfo.AllowedGroupIds == nil {
-		BaseConfInfo.AllowedGroupIds = make(map[string]bool)
-	}
-	if BaseConfInfo.AdminUserIds == nil {
-		BaseConfInfo.AdminUserIds = make(map[string]bool)
-	}
-
-	for _, userIdStr := range strings.Split(allowedUserIds, ",") {
-		if userIdStr == "" {
-			continue
-		}
-		BaseConfInfo.AllowedUserIds[userIdStr] = true
-	}
-
-	for _, groupIdStr := range strings.Split(allowedGroupIds, ",") {
-		if groupIdStr == "" {
-			continue
-		}
-		BaseConfInfo.AllowedGroupIds[groupIdStr] = true
-	}
-
-	for _, adminIdStr := range strings.Split(adminUserIds, ",") {
-		if adminIdStr == "" {
-			continue
-		}
-		BaseConfInfo.AdminUserIds[adminIdStr] = true
-	}
-
-	logger.Info("CONF", "TelegramBotToken", BaseConfInfo.TelegramBotToken)
-	logger.Info("CONF", "DiscordBotToken", BaseConfInfo.DiscordBotToken)
-	logger.Info("CONF", "SlackBotToken", BaseConfInfo.SlackBotToken)
-	logger.Info("CONF", "SlackAppToken", BaseConfInfo.SlackAppToken)
-	logger.Info("CONF", "LarkAPPID", BaseConfInfo.LarkAPPID)
-	logger.Info("CONF", "LarkAppSecret", BaseConfInfo.LarkAppSecret)
-	logger.Info("CONF", "DingClientId", BaseConfInfo.DingClientId)
-	logger.Info("CONF", "DingClientSecret", BaseConfInfo.DingClientSecret)
-	logger.Info("CONF", "ComWechatToken", BaseConfInfo.ComWechatToken)
-	logger.Info("CONF", "ComWechatEncodingAESKey", BaseConfInfo.ComWechatEncodingAESKey)
-	logger.Info("CONF", "ComWechatCorpID", BaseConfInfo.ComWechatCorpID)
-	logger.Info("CONF", "ComWechatSecret", BaseConfInfo.ComWechatSecret)
-	logger.Info("CONF", "ComWechatAgentID", BaseConfInfo.ComWechatAgentID)
-	logger.Info("CONF", "WechatToken", BaseConfInfo.WechatToken)
-	logger.Info("CONF", "WechatAppSecret", BaseConfInfo.WechatAppSecret)
-	logger.Info("CONF", "WechatAppID", BaseConfInfo.WechatAppID)
-	logger.Info("CONF", "WechatActive", BaseConfInfo.WechatActive)
-	logger.Info("CONF", "WechatEncodingAESKey", BaseConfInfo.WechatEncodingAESKey)
-	logger.Info("CONF", "QQAppID", BaseConfInfo.QQAppID)
-	logger.Info("CONF", "QQAppSecret", BaseConfInfo.QQAppSecret)
-	logger.Info("CONF", "QQOneBotHttpServer", BaseConfInfo.QQOneBotHttpServer)
-	logger.Info("CONF", "QQOneBotReceiveToken", BaseConfInfo.QQOneBotReceiveToken)
-	logger.Info("CONF", "QQOneBotSendToken", BaseConfInfo.QQOneBotSendToken)
-	logger.Info("CONF", "DeepseekToken", BaseConfInfo.DeepseekToken)
-	logger.Info("CONF", "CustomUrl", BaseConfInfo.CustomUrl)
-	logger.Info("CONF", "Type", BaseConfInfo.Type)
-	logger.Info("CONF", "VolcAK", BaseConfInfo.VolcAK)
-	logger.Info("CONF", "VolcSK", BaseConfInfo.VolcSK)
-	logger.Info("CONF", "AliyunToken", BaseConfInfo.AliyunToken)
-	logger.Info("CONF", "DBType", BaseConfInfo.DBType)
-	logger.Info("CONF", "DBConf", BaseConfInfo.DBConf)
-	logger.Info("CONF", "AllowedUserIds", BaseConfInfo.AllowedUserIds)
-	logger.Info("CONF", "AllowedGroupIds", BaseConfInfo.AllowedGroupIds)
-	logger.Info("CONF", "LLMProxy", BaseConfInfo.LLMProxy)
-	logger.Info("CONF", "RobotProxy", BaseConfInfo.RobotProxy)
-	logger.Info("CONF", "Lang", BaseConfInfo.Lang)
-	logger.Info("CONF", "TokenPerUser", BaseConfInfo.TokenPerUser)
-	logger.Info("CONF", "MaxUserChat", BaseConfInfo.MaxUserChat)
-	logger.Info("CONF", "HTTPHost", BaseConfInfo.HTTPHost)
-	logger.Info("CONF", "UseTools", BaseConfInfo.UseTools)
-	logger.Info("CONF", "OpenAIToken", BaseConfInfo.OpenAIToken)
-	logger.Info("CONF", "GeminiToken", BaseConfInfo.GeminiToken)
-	logger.Info("CONF", "ErnieAK", BaseConfInfo.ErnieAK)
-	logger.Info("CONF", "ErnieSK", BaseConfInfo.ErnieSK)
-	logger.Info("CONF", "VolToken", BaseConfInfo.VolToken)
-	logger.Info("CONF", "CrtFile", BaseConfInfo.CrtFile)
-	logger.Info("CONF", "KeyFile", BaseConfInfo.KeyFile)
-	logger.Info("CONF", "CaFile", BaseConfInfo.CaFile)
-	logger.Info("CONF", "MediaType", BaseConfInfo.MediaType)
-	logger.Info("CONF", "BotName", BaseConfInfo.BotName)
-	logger.Info("CONF", "MaxQAPair", BaseConfInfo.MaxQAPair)
-	logger.Info("CONF", "SmartMode", BaseConfInfo.SmartMode)
-	logger.Info("CONF", "Powered", BaseConfInfo.Powered)
-	logger.Info("CONF", "Character", BaseConfInfo.Character)
-	logger.Info("CONF", "ContextExpireTime", BaseConfInfo.ContextExpireTime)
-	logger.Info("CONF", "EnableAutoCompress", BaseConfInfo.EnableAutoCompress)
-	logger.Info("CONF", "CompressThreshold", BaseConfInfo.CompressThreshold)
-	logger.Info("CONF", "CompressKeepPairs", BaseConfInfo.CompressKeepPairs)
-	logger.Info("CONF", "SendMcpRes", BaseConfInfo.SendMcpRes)
-	logger.Info("CONF", "DefaultModel", BaseConfInfo.DefaultModel)
-	logger.Info("CONF", "LLMRetryTimes", BaseConfInfo.LLMRetryTimes)
-	logger.Info("CONF", "LLMRetryInterval", BaseConfInfo.LLMRetryInterval)
-	logger.Info("CONF", "LLMOptionParam", BaseConfInfo.LLMOptionParam)
-	logger.Info("CONF", "ImagePath", BaseConfInfo.ImagePath)
-	logger.Info("CONF", "IsStreaming", BaseConfInfo.IsStreaming)
-	logger.Info("CONF", "TaskAutoApprove", BaseConfInfo.TaskAutoApprove)
-	logger.Info("CONF", "SendMcpMediaToLLM", BaseConfInfo.SendMcpMediaToLLM)
-
-	logger.Info("AUDIO_CONF", "AudioAppID", AudioConfInfo.VolAudioAppID)
-	logger.Info("AUDIO_CONF", "AudioToken", AudioConfInfo.VolAudioToken)
-	logger.Info("AUDIO_CONF", "AudioCluster", AudioConfInfo.VolAudioRecCluster)
-	logger.Info("AUDIO_CONF", "AudioVoiceType", AudioConfInfo.VolAudioVoiceType)
-	logger.Info("AUDIO_CONF", "AudioTTSCluster", AudioConfInfo.VolAudioTTSCluster)
-	logger.Info("AUDIO_CONF", "GeminiAudioModel", AudioConfInfo.GeminiAudioModel)
-	logger.Info("AUDIO_CONF", "GeminiVoiceName", AudioConfInfo.GeminiVoiceName)
-	logger.Info("AUDIO_CONF", "OpenAIAudioModel", AudioConfInfo.OpenAIAudioModel)
-	logger.Info("AUDIO_CONF", "OpenAIVoiceName", AudioConfInfo.OpenAIVoiceName)
-	logger.Info("AUDIO_CONF", "TTSType", AudioConfInfo.TTSType)
-	logger.Info("AUDIO_CONF", "VolEndSmoothWindow", AudioConfInfo.VolEndSmoothWindow)
-	logger.Info("AUDIO_CONF", "VolTTSSpeaker", AudioConfInfo.VolTTSSpeaker)
-	logger.Info("AUDIO_CONF", "VolBotName", AudioConfInfo.VolBotName)
-	logger.Info("AUDIO_CONF", "VolSystemRole", AudioConfInfo.VolSystemRole)
-	logger.Info("AUDIO_CONF", "VolSpeakingStyle", AudioConfInfo.VolSpeakingStyle)
-	logger.Info("AUDIO_CONF", "AliyunAudioModel", AudioConfInfo.AliyunAudioModel)
-	logger.Info("AUDIO_CONF", "AliyunAudioVoice", AudioConfInfo.AliyunAudioVoice)
-	logger.Info("AUDIO_CONF", "AliyunAudioRecModel", AudioConfInfo.AliyunAudioRecModel)
-
-	logger.Info("RAG_CONF", "EmbeddingType", RagConfInfo.EmbeddingType)
-	logger.Info("RAG_CONF", "KnowledgePath", RagConfInfo.KnowledgePath)
-	logger.Info("RAG_CONF", "VectorDBType", RagConfInfo.VectorDBType)
-	logger.Info("RAG_CONF", "ChromaURL", RagConfInfo.ChromaURL)
-	logger.Info("RAG_CONF", "ChromaSpace", RagConfInfo.Space)
-	logger.Info("RAG_CONF", "MilvusURL", RagConfInfo.MilvusURL)
-	logger.Info("RAG_CONF", "WeaviateURL", RagConfInfo.WeaviateURL)
-	logger.Info("RAG_CONF", "WeaviateScheme", RagConfInfo.WeaviateScheme)
-	logger.Info("RAG_CONF", "QdrantHost", RagConfInfo.QdrantHost)
-	logger.Info("RAG_CONF", "QdrantPort", RagConfInfo.QdrantPort)
-	logger.Info("RAG_CONF", "QdrantUseTLS", RagConfInfo.QdrantUseTLS)
-
-	logger.Info("PHOTO_CONF", "ReqKey", PhotoConfInfo.ReqKey)
-	logger.Info("PHOTO_CONF", "ModelVersion", PhotoConfInfo.ModelVersion)
-	logger.Info("PHOTO_CONF", "ReqScheduleConf", PhotoConfInfo.ReqScheduleConf)
-	logger.Info("PHOTO_CONF", "Seed", PhotoConfInfo.Seed)
-	logger.Info("PHOTO_CONF", "Width", PhotoConfInfo.Width)
-	logger.Info("PHOTO_CONF", "Height", PhotoConfInfo.Height)
-	logger.Info("PHOTO_CONF", "Scale", PhotoConfInfo.Scale)
-	logger.Info("PHOTO_CONF", "DDIMSteps", PhotoConfInfo.DDIMSteps)
-	logger.Info("PHOTO_CONF", "UsePreLLM", PhotoConfInfo.UsePreLLM)
-	logger.Info("PHOTO_CONF", "UseSr", PhotoConfInfo.UseSr)
-	logger.Info("PHOTO_CONF", "ReturnUrl", PhotoConfInfo.ReturnUrl)
-	logger.Info("PHOTO_CONF", "AddLogo", PhotoConfInfo.AddLogo)
-	logger.Info("PHOTO_CONF", "Position", PhotoConfInfo.Position)
-	logger.Info("PHOTO_CONF", "Language", PhotoConfInfo.Language)
-	logger.Info("PHOTO_CONF", "Opacity", PhotoConfInfo.Opacity)
-	logger.Info("PHOTO_CONF", "LogoTextContent", PhotoConfInfo.LogoTextContent)
-	logger.Info("PHOTO_CONF", "GeminiImageModel", PhotoConfInfo.GeminiImageModel)
-	logger.Info("PHOTO_CONF", "GeminiRecModel", PhotoConfInfo.GeminiRecModel)
-	logger.Info("PHOTO_CONF", "OpenAIImageStyle", PhotoConfInfo.OpenAIImageStyle)
-	logger.Info("PHOTO_CONF", "OpenAIImageModel", PhotoConfInfo.OpenAIImageModel)
-	logger.Info("PHOTO_CONF", "OpenAIImageSize", PhotoConfInfo.OpenAIImageSize)
-	logger.Info("PHOTO_CONF", "OpenAIRecModel", PhotoConfInfo.OpenAIRecModel)
-	logger.Info("PHOTO_CONF", "VolImageModel", PhotoConfInfo.VolImageModel)
-	logger.Info("PHOTO_CONF", "VolRecModel", PhotoConfInfo.VolRecModel)
-	logger.Info("PHOTO_CONF", "AliyunImageModel", PhotoConfInfo.AliyunImageModel)
-	logger.Info("PHOTO_CONF", "AliyunRecModel", PhotoConfInfo.AliyunRecModel)
-
-	logger.Info("VIDEO_CONF", "VOL_VIDEO_MODEL", VideoConfInfo.VolVideoModel)
-	logger.Info("VIDEO_CONF", "RADIO", VideoConfInfo.Radio)
-	logger.Info("VIDEO_CONF", "DURATION", VideoConfInfo.Duration)
-	logger.Info("VIDEO_CONF", "FPS", VideoConfInfo.FPS)
-	logger.Info("VIDEO_CONF", "RESOLUTION", VideoConfInfo.Resolution)
-	logger.Info("VIDEO_CONF", "WATERMARK", VideoConfInfo.Watermark)
-	logger.Info("AUDIO_CONF", "GeminiVideoModel", VideoConfInfo.GeminiVideoModel)
-	logger.Info("AUDIO_CONF", "AliyunVideoModel", VideoConfInfo.AliyunVideoModel)
-
-	logger.Info("REGISTER_CONF", "Type", RegisterConfInfo.Type)
-	logger.Info("REGISTER_CONF", "EtcdURLs", RegisterConfInfo.EtcdURLs)
-	logger.Info("REGISTER_CONF", "EtcdUsername", RegisterConfInfo.EtcdUsername)
-	logger.Info("REGISTER_CONF", "EtcdPassword", RegisterConfInfo.EtcdPassword)
-
-	logger.Info("LLM_CONF", "FrequencyPenalty", LLMConfInfo.FrequencyPenalty)
-	logger.Info("LLM_CONF", "MaxTokens", LLMConfInfo.MaxTokens)
-	logger.Info("LLM_CONF", "PresencePenalty", LLMConfInfo.PresencePenalty)
-	logger.Info("LLM_CONF", "Temperature", LLMConfInfo.Temperature)
-	logger.Info("LLM_CONF", "TopP", LLMConfInfo.TopP)
-	logger.Info("LLM_CONF", "Stop", LLMConfInfo.Stop)
-	logger.Info("LLM_CONF", "LogProbs", LLMConfInfo.LogProbs)
-	logger.Info("LLM_CONF", "TopLogProbs", LLMConfInfo.TopLogProbs)
-
-	logger.Info("TOOLS_CONF", "McpConfPath", *ToolsConfInfo.McpConfPath)
 }
 
 func GetAbsPath(relPath string) string {
@@ -708,6 +861,11 @@ func loadConf() bool {
 		return false
 	}
 
+	// an explicit -conf file replaces the implicit persisted config entirely
+	if _, ok := m["conf"]; ok {
+		return false
+	}
+
 	data, err := os.ReadFile(getSaveConf(m))
 	if err != nil {
 		return false
@@ -721,6 +879,7 @@ func loadConf() bool {
 
 	hasNewField := false
 
+	applyLegacyConfKeys(AllConf["base"].(map[string]interface{}))
 	newField, err := TransferMapToConf(AllConf["base"].(map[string]interface{}), BaseConfInfo)
 	if err != nil {
 		logger.Error("Failed to transfer map to base conf", "err", err)
@@ -841,6 +1000,18 @@ func NormalizeHTTP(addr string) string {
 		addr = "http://" + addr
 	}
 	return addr
+}
+
+// applyLegacyConfKeys renames config keys that were misspelled in older
+// versions to their current names, so config files written before the fix
+// keep working. Only applied when the current name is absent.
+func applyLegacyConfKeys(m map[string]interface{}) {
+	if _, ok := m["max_qa_pair"]; !ok {
+		if v, ok := m["max_qa_pari"]; ok {
+			m["max_qa_pair"] = v
+			delete(m, "max_qa_pari")
+		}
+	}
 }
 
 // TransferMapToConf unmarshals the persisted config map m into conf. Values

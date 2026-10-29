@@ -557,13 +557,13 @@ func (d *DiscordRobot) Talk() {
 		go func() {
 			defer func() {
 				if err := recover(); err != nil {
-					logger.Error("recover panic", "err", err, "stack", string(debug.Stack()))
+					logger.ErrorCtx(d.Robot.Ctx, "recover panic", "err", err, "stack", string(debug.Stack()))
 				}
 			}()
 
 			vc, err := d.Session.ChannelVoiceJoin(gid, cid, false, false)
 			if err != nil {
-				logger.Error("join voice fail", "err", err)
+				logger.ErrorCtx(d.Robot.Ctx, "join voice fail", "err", err)
 				return
 			}
 
@@ -576,13 +576,13 @@ func (d *DiscordRobot) Talk() {
 				"X-Api-Connect-Id":  []string{uuid.New().String()},
 			})
 			if err != nil {
-				logger.Error("connect vol fail", "err", err)
+				logger.ErrorCtx(d.Robot.Ctx, "connect vol fail", "err", err)
 				return
 			}
 
 			err = utils.StartConnection(volDialog.VolWsConn)
 			if err != nil {
-				logger.Error("start connect fail", "err", err)
+				logger.ErrorCtx(d.Robot.Ctx, "start connect fail", "err", err)
 				return
 			}
 			err = utils.StartSession(volDialog.VolWsConn, userId, &utils.StartSessionPayload{
@@ -611,7 +611,7 @@ func (d *DiscordRobot) Talk() {
 				},
 			})
 			if err != nil {
-				logger.Error("start session fail", "err", err)
+				logger.ErrorCtx(d.Robot.Ctx, "start session fail", "err", err)
 				return
 			}
 
@@ -638,7 +638,7 @@ func (d *DiscordRobot) PlayAudioToDiscord(vc *discordgo.VoiceConnection) {
 		default:
 			msg, err := utils.ReceiveMessage(volDialog.VolWsConn)
 			if err != nil {
-				logger.Error("receive message", "err", err)
+				logger.ErrorCtx(d.Robot.Ctx, "receive message", "err", err)
 				return
 			}
 
@@ -656,7 +656,7 @@ func (d *DiscordRobot) PlayAudioToDiscord(vc *discordgo.VoiceConnection) {
 					}
 
 				case 350, 451:
-					logger.Info("start event", "event", msg.Event, "type", msg.TypeFlag(), "payload", string(msg.Payload))
+					logger.InfoCtx(d.Robot.Ctx, "start event", "event", msg.Event, "type", msg.TypeFlag(), "payload", string(msg.Payload))
 				case 352:
 					utils.HandleIncomingAudio(msg.Payload)
 					volDialog.Audio = append(volDialog.Audio, msg.Payload...)
@@ -670,9 +670,9 @@ func (d *DiscordRobot) PlayAudioToDiscord(vc *discordgo.VoiceConnection) {
 				utils.HandleIncomingAudio(msg.Payload)
 				volDialog.Audio = append(volDialog.Audio, msg.Payload...)
 			case utils.MsgTypeError:
-				logger.Error("Receive Error message", "code", msg.ErrorCode, "payload", string(msg.Payload))
+				logger.ErrorCtx(d.Robot.Ctx, "Receive Error message", "code", msg.ErrorCode, "payload", string(msg.Payload))
 			default:
-				logger.Error("Received unexpected message type", "type", msg.Type)
+				logger.ErrorCtx(d.Robot.Ctx, "Received unexpected message type", "type", msg.Type)
 			}
 		}
 	}
@@ -683,7 +683,7 @@ func (d *DiscordRobot) sendAudioToDiscord(vc *discordgo.VoiceConnection, audioCo
 
 	encoder, err := gopus.NewEncoder(48000, 2, gopus.Audio)
 	if err != nil {
-		logger.Error("gopus encoder fail", "err", err)
+		logger.ErrorCtx(d.Robot.Ctx, "gopus encoder fail", "err", err)
 		return
 	}
 	encoder.SetBitrate(64000)
@@ -703,7 +703,7 @@ func (d *DiscordRobot) sendAudioToDiscord(vc *discordgo.VoiceConnection, audioCo
 
 		opus, err := encoder.Encode(stereo48k, samplesPerFrame, 4000)
 		if err != nil {
-			logger.Error("gopus encode fail", "err", err)
+			logger.ErrorCtx(d.Robot.Ctx, "gopus encode fail", "err", err)
 			break
 		}
 
@@ -750,7 +750,7 @@ func (d *DiscordRobot) receiveVoice(vc *discordgo.VoiceConnection) {
 
 	decoder, err := gopus.NewDecoder(16000, 1)
 	if err != nil {
-		logger.Error("Failed to create opus decoder", "err", err)
+		logger.ErrorCtx(d.Robot.Ctx, "Failed to create opus decoder", "err", err)
 		return
 	}
 
@@ -763,7 +763,7 @@ func (d *DiscordRobot) receiveVoice(vc *discordgo.VoiceConnection) {
 		case packet := <-vc.OpusRecv:
 			pcm, err := decoder.Decode(packet.Opus, 960, false)
 			if err != nil && !errors.Is(err, io.EOF) {
-				logger.Error("Failed to decode opus packet", "err", err)
+				logger.ErrorCtx(d.Robot.Ctx, "Failed to decode opus packet", "err", err)
 				continue
 			}
 
@@ -776,7 +776,7 @@ func (d *DiscordRobot) receiveVoice(vc *discordgo.VoiceConnection) {
 
 				err = utils.SendAudio(volDialog.VolWsConn, userId, buf)
 				if err != nil {
-					logger.Error("Failed to send PCM data", "err", err)
+					logger.ErrorCtx(d.Robot.Ctx, "Failed to send PCM data", "err", err)
 				}
 			}
 		}
@@ -846,5 +846,47 @@ func CloseTalk(vc *discordgo.VoiceConnection) {
 			Mode:       "vol",
 		})
 		volDialog.Token = 0
+	}
+}
+
+func init() {
+	RegisterChannel(Channel{
+		Name: param.Discord,
+		MissingCfg: func() []string {
+			return required(nil, "DISCORD_BOT_TOKEN", conf.BaseConfInfo.DiscordBotToken)
+		},
+		Start: StartDiscordRobot,
+	})
+}
+
+// discordReactionEmoji maps turn statuses to unicode reactions.
+var discordReactionEmoji = map[string]string{
+	ReactionWorking: "👀",
+	ReactionOK:      "👍",
+	ReactionError:   "😢",
+}
+
+// react mirrors the turn state on the user's message. Slash-command turns
+// (d.Inter set, d.Msg nil) are skipped: there is no message to react on.
+func (d *DiscordRobot) react(status string) {
+	if d.Msg == nil || d.Session == nil {
+		return
+	}
+	emoji, ok := discordReactionEmoji[status]
+	if !ok {
+		return
+	}
+	if err := d.Session.MessageReactionAdd(d.Msg.ChannelID, d.Msg.ID, emoji); err != nil {
+		logger.WarnCtx(d.Robot.Ctx, "add reaction fail", "err", err)
+	}
+}
+
+// sendTyping triggers the channel's typing indicator while the LLM works.
+func (d *DiscordRobot) sendTyping() {
+	if d.Msg == nil || d.Session == nil {
+		return
+	}
+	if err := d.Session.ChannelTyping(d.Msg.ChannelID); err != nil {
+		logger.WarnCtx(d.Robot.Ctx, "send typing fail", "err", err)
 	}
 }

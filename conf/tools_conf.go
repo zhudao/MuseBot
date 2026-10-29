@@ -35,10 +35,10 @@ type AgentInfo struct {
 	IsSkill      bool   `json:"-"`
 	IsBuiltin    bool   `json:"-"`
 
-	DeepseekTool    []deepseek.Tool   `json:"-"`
-	VolTool         []*model.Tool     `json:"-"`
-	OpenAITools     []openai.Tool     `json:"-"`
-	GeminiTools     []*genai.Tool     `json:"-"`
+	DeepseekTool []deepseek.Tool `json:"-"`
+	VolTool      []*model.Tool   `json:"-"`
+	OpenAITools  []openai.Tool   `json:"-"`
+	GeminiTools  []*genai.Tool   `json:"-"`
 }
 
 type ToolsConf struct {
@@ -67,7 +67,7 @@ func InitToolsConf() {
 	flag.Int("command_timeout_sec", 60, "built-in command timeout in seconds")
 
 	ToolsConfInfo.McpConfPath = flag.String("mcp_conf_path", GetAbsPath("conf/mcp/mcp.json"), "mcp conf path")
-	ToolsConfInfo.SkillPath = flag.String("skill_path", GetAbsPath("conf/skills"), "skill directory path")
+	ToolsConfInfo.SkillPath = flag.String("skill_path", GetAbsPath("data/skills"), "skill directory path")
 	ToolsConfInfo.FileRootPath = flag.String("file_root_path", GetAbsPath("data/agent_files"), "built-in file operation root")
 }
 
@@ -91,8 +91,11 @@ func EnvToolsConf() {
 	if os.Getenv("MCP_CONF_PATH") != "" {
 		*ToolsConfInfo.McpConfPath = os.Getenv("MCP_CONF_PATH")
 	}
-	if os.Getenv("SKILLS_PATH") != "" {
-		*ToolsConfInfo.SkillPath = os.Getenv("SKILLS_PATH")
+	if path := os.Getenv("SKILL_PATH"); path != "" {
+		*ToolsConfInfo.SkillPath = path
+	} else if path := os.Getenv("SKILLS_PATH"); path != "" {
+		// legacy plural spelling kept for compatibility
+		*ToolsConfInfo.SkillPath = path
 	}
 	if os.Getenv("ALLOWED_COMMANDS") != "" {
 		ToolsConfInfo.AllowedCommands = os.Getenv("ALLOWED_COMMANDS")
@@ -164,7 +167,7 @@ func InitTools() {
 		InsertTools(mcpParam.Name)
 	}
 
-	InitSkills()
+	InitSkills(context.Background())
 }
 
 func RegisterBuiltinTools() {
@@ -184,12 +187,12 @@ func RegisterBuiltinTools() {
 	}
 
 	TaskTools.Store(BuiltinWebSearchTool, &AgentInfo{
-		Description:     "Web research agent. Assign it as a plan step only when the task needs external facts, current data, or source links; skip it when no external information is required. It calls web_search.",
-		IsBuiltin:       true,
-		DeepseekTool:    mcputils.TransToolsToDPFunctionCall([]mcp.Tool{searchTool}),
-		VolTool:         mcputils.TransToolsToVolFunctionCall([]mcp.Tool{searchTool}),
-		OpenAITools:     mcputils.TransToolsToChatGPTFunctionCall([]mcp.Tool{searchTool}),
-		GeminiTools:     mcputils.TransToolsToGeminiFunctionCall([]mcp.Tool{searchTool}),
+		Description:  "Web research agent. Assign it as a plan step only when the task needs external facts, current data, or source links; skip it when no external information is required. It calls web_search.",
+		IsBuiltin:    true,
+		DeepseekTool: mcputils.TransToolsToDPFunctionCall([]mcp.Tool{searchTool}),
+		VolTool:      mcputils.TransToolsToVolFunctionCall([]mcp.Tool{searchTool}),
+		OpenAITools:  mcputils.TransToolsToChatGPTFunctionCall([]mcp.Tool{searchTool}),
+		GeminiTools:  mcputils.TransToolsToGeminiFunctionCall([]mcp.Tool{searchTool}),
 	})
 
 	shellTool := mcp.Tool{
@@ -217,12 +220,12 @@ func RegisterBuiltinTools() {
 	}
 
 	TaskTools.Store(BuiltinShellTool, &AgentInfo{
-		Description:     "Command execution agent. Call shell only with the exact argv needed, and wait for user approval before execution.",
-		IsBuiltin:       true,
-		DeepseekTool:    mcputils.TransToolsToDPFunctionCall([]mcp.Tool{shellTool}),
-		VolTool:         mcputils.TransToolsToVolFunctionCall([]mcp.Tool{shellTool}),
-		OpenAITools:     mcputils.TransToolsToChatGPTFunctionCall([]mcp.Tool{shellTool}),
-		GeminiTools:     mcputils.TransToolsToGeminiFunctionCall([]mcp.Tool{shellTool}),
+		Description:  "Command execution agent. Call shell only with the exact argv needed, and wait for user approval before execution.",
+		IsBuiltin:    true,
+		DeepseekTool: mcputils.TransToolsToDPFunctionCall([]mcp.Tool{shellTool}),
+		VolTool:      mcputils.TransToolsToVolFunctionCall([]mcp.Tool{shellTool}),
+		OpenAITools:  mcputils.TransToolsToChatGPTFunctionCall([]mcp.Tool{shellTool}),
+		GeminiTools:  mcputils.TransToolsToGeminiFunctionCall([]mcp.Tool{shellTool}),
 	})
 
 	configTool := mcp.Tool{
@@ -232,7 +235,7 @@ func RegisterBuiltinTools() {
 			Type: "object",
 			Properties: map[string]any{
 				"type":        map[string]any{"type": "string", "description": "Action type: config, mcp, skill, cron, command"},
-				"operation":   map[string]any{"type": "string", "description": "config: list|get|set; mcp: list|set|delete|enable|disable|sync; skill: list|create|reload|set_path|search|install; cron: list|get|create|update|enable|disable|delete|clear; command: run"},
+				"operation":   map[string]any{"type": "string", "description": "config: list|get|set; mcp: list|set|delete|enable|disable|sync; skill: list|create|reload|search|install|delete (empty name deletes all); cron: list|get|create|update|enable|disable|delete|clear; command: run"},
 				"config_type": map[string]any{"type": "string", "description": "config get/set target: base, audio, llm, photo, rag, video, register, tools"},
 				"key":         map[string]any{"type": "string", "description": "config key in json tag form, e.g. smart_mode"},
 				"value":       map[string]any{"description": "config value to set"},
@@ -247,7 +250,7 @@ func RegisterBuiltinTools() {
 				"prompt":  map[string]any{"type": "string", "description": "cron prompt"},
 				"args":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "command argv array, e.g. [\"git\",\"status\"]"},
 				"timeout": map[string]any{"type": "integer", "description": "command timeout seconds"},
-				"path":    map[string]any{"type": "string", "description": "command working directory inside the sandbox"},
+				"path":    map[string]any{"type": "string", "description": "skill: source URL or owner/repo for install; command: working directory inside the sandbox"},
 				"id":      map[string]any{"type": "integer", "description": "cron id for cron update/enable/disable/delete"},
 			},
 			Required: []string{"type", "operation"},
@@ -264,10 +267,10 @@ func RegisterBuiltinTools() {
 			"Cron create returns the new numeric id; keep it for later reference. Before cron update/enable/disable/delete, run cron list first and match by id, name, prompt or cron spec; never guess an id, and confirm with the user when several jobs match. " +
 			"Use command(run) with an argv array, never a shell string; file operations belong to the shell agent, not bot_config. " +
 			"Never invent configuration keys, operations, or URLs, and never return secrets.",
-		DeepseekTool:    mcputils.TransToolsToDPFunctionCall([]mcp.Tool{configTool}),
-		VolTool:         mcputils.TransToolsToVolFunctionCall([]mcp.Tool{configTool}),
-		OpenAITools:     mcputils.TransToolsToChatGPTFunctionCall([]mcp.Tool{configTool}),
-		GeminiTools:     mcputils.TransToolsToGeminiFunctionCall([]mcp.Tool{configTool}),
+		DeepseekTool: mcputils.TransToolsToDPFunctionCall([]mcp.Tool{configTool}),
+		VolTool:      mcputils.TransToolsToVolFunctionCall([]mcp.Tool{configTool}),
+		OpenAITools:  mcputils.TransToolsToChatGPTFunctionCall([]mcp.Tool{configTool}),
+		GeminiTools:  mcputils.TransToolsToGeminiFunctionCall([]mcp.Tool{configTool}),
 	})
 }
 
@@ -288,11 +291,11 @@ func InsertTools(clientName string) {
 		gmTools := mcputils.TransToolsToGeminiFunctionCall(c.Tools)
 
 		TaskTools.Store(clientName, &AgentInfo{
-			Description: fmt.Sprintf("MCP server %s exposes the function tools listed in this agent's schema.", clientName),
-			DeepseekTool:    dpTools,
-			VolTool:         volTools,
-			GeminiTools:     gmTools,
-			OpenAITools:     oaTools,
+			Description:  fmt.Sprintf("MCP server %s exposes the function tools listed in this agent's schema.", clientName),
+			DeepseekTool: dpTools,
+			VolTool:      volTools,
+			GeminiTools:  gmTools,
+			OpenAITools:  oaTools,
 		})
 
 		RebuildChatToolSets()

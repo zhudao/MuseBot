@@ -33,6 +33,10 @@ chatgpt: [https://www.youtube.com/watch?v=G\_DZYMvd5Ug](https://www.youtube.com/
   см. [документацию](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/admin.md).
 - 🌛 **Регистрация**: С помощью модуля регистрации служб экземпляры роботов могут быть автоматически зарегистрированы в
   центре регистрации [документация](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/register.md)
+- 🧩 **Плагины**: Подключайте новые LLM-провайдеры и каналы чата через реестры провайдеров и каналов — по одному файлу на
+  расширение, см. [документацию](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/plugin.md)
+- 🛟 **Отказоустойчивость моделей**: автоматический переход на другие настроенные провайдеры при сбоях основной модели,
+  плюс дешёвая вспомогательная модель для внутренних вызовов, см. [документацию](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/failover.md)
 - 🌈 **Метрики**: Поддержка Метрик для мониторинга,
   см. [документацию](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/metrics.md).
 
@@ -305,12 +309,10 @@ others: см. [документацию](https://www.volcengine.com/docs/82379/1
    - `ffmpeg`/`ffprobe`, `nodejs`/`npm` и `libopus` предустановлены для голоса, видео и skill-ов.
 
 4. **Первый вход в админку**
-   При первом запуске для аккаунта `admin` генерируется случайный пароль и один раз
-   выводится в лог контейнера:
-   ```sh
-    docker logs my-bot 2>&1 | grep "password is shown ONCE"
-   ```
-   Войдите на `http://<host>:18080` и смените пароль (см.
+   При первом запуске создаётся аккаунт по умолчанию `admin` / `admin`. После
+   входа админ-панель предложит сменить пароль (можно нажать «Позже», но лучше
+   сменить пароль сразу).
+   Войдите на `http://<host>:18080` (см.
    [документацию](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/admin.md)).
 
 ## Участие

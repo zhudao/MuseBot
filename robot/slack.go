@@ -102,7 +102,7 @@ func StartSlackRobot(ctx context.Context) {
 		}
 
 	}()
-	logger.Info("SlackBot Info", "username", authResp.User)
+	logger.InfoCtx(ctx, "SlackBot Info", "username", authResp.User)
 	err = socketClient.RunContext(ctx)
 	if err != nil {
 		logger.ErrorCtx(ctx, "SlackBot Run failed", "err", err)
@@ -213,7 +213,7 @@ func (s *SlackRobot) getMessageContent() bool {
 
 			s.Prompt, err = s.Robot.GetAudioContent(s.VoiceContent)
 			if err != nil {
-				logger.Warn("generate text from audio failed", "err", err)
+				logger.WarnCtx(s.Robot.Ctx, "generate text from audio failed", "err", err)
 				return false
 			}
 
@@ -418,9 +418,43 @@ func (s *SlackRobot) sendVoiceContent(voiceContent []byte, duration int) error {
 
 	_, err := s.Client.UploadFileV2(uploadParams)
 	if err != nil {
-		logger.Warn("upload voice to slack fail", "err", err)
+		logger.WarnCtx(s.Robot.Ctx, "upload voice to slack fail", "err", err)
 		return err
 	}
 
 	return nil
+}
+
+func init() {
+	RegisterChannel(Channel{
+		Name: param.Slack,
+		MissingCfg: func() []string {
+			var missing []string
+			missing = required(missing, "SLACK_BOT_TOKEN", conf.BaseConfInfo.SlackBotToken)
+			return required(missing, "SLACK_APP_TOKEN", conf.BaseConfInfo.SlackAppToken)
+		},
+		Start: StartSlackRobot,
+	})
+}
+
+// slackReactionEmoji maps turn statuses to Slack reaction names.
+var slackReactionEmoji = map[string]string{
+	ReactionWorking: "eyes",
+	ReactionOK:      "+1",
+	ReactionError:   "cry",
+}
+
+// react mirrors the turn state on the user's message. Slack exposes no bot
+// typing indicator, so SlackRobot only implements Reactor, not Typer.
+func (s *SlackRobot) react(status string) {
+	if s.Event == nil || s.Event.TimeStamp == "" || s.Client == nil {
+		return
+	}
+	name, ok := slackReactionEmoji[status]
+	if !ok {
+		return
+	}
+	if err := s.Client.AddReaction(name, slack.NewRefToMessage(s.Event.Channel, s.Event.TimeStamp)); err != nil {
+		logger.WarnCtx(s.Robot.Ctx, "add reaction fail", "err", err)
+	}
 }

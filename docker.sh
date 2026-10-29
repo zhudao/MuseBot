@@ -19,12 +19,20 @@ ALIYUN_REPO=crpi-i1dsvpjijxpgjgbv.cn-hangzhou.personal.cr.aliyuncs.com/jackyin08
 PLATFORMS="linux/amd64,linux/arm64"
 # 本机网络限制(2026-10):buildkit 无法直连 docker.io(基础镜像需先 docker pull 到本地);
 # daemon/代理链路只稳定支持下载,大体积上传必超时 → 构建后本地导出,用 skopeo(宿主机进程)推送
+# 基础镜像双平台都 pull 到本地后,可用 BUILD_CONTEXT_ARGS 完全绕开 registry:
+#   BUILD_CONTEXT_ARGS="--build-context golang:1.26=docker-image://golang:1.26 \
+#     --build-context mwader/static-ffmpeg:7.1=docker-image://mwader/static-ffmpeg:7.1 \
+#     --build-context debian:stable-slim=docker-image://debian:stable-slim"
+# RUN 步骤(apt/go mod)直连不稳时,再注入宿主机代理:
+#   BUILD_PROXY_ARGS="--build-arg http_proxy=http://host.docker.internal:7892 --build-arg https_proxy=http://host.docker.internal:7892"
 TAR=/tmp/musebot-${VERSION}.tar
 
 echo "🚀 create multi-platform image (local load)..."
 docker buildx build \
   --platform ${PLATFORMS} \
   --provenance=false --sbom=false \
+  ${BUILD_CONTEXT_ARGS:-} \
+  ${BUILD_PROXY_ARGS:-} \
   -t ${DOCKER_HUB_REPO}:${VERSION} \
   -t ${DOCKER_HUB_REPO}:latest \
   -t ${ALIYUN_REPO}:latest \

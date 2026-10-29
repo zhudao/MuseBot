@@ -3,8 +3,11 @@ package robot
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
+	"net/http"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -224,6 +227,20 @@ func (t *TelegramRobot) checkValid() bool {
 		}
 
 		t.ImageContent = t.GetPhotoContent()
+		// Telegram stickers cannot carry a caption, so a sticker on its own
+		// would have an empty prompt and never reach the model
+		if len(t.ImageContent) > 0 && strings.TrimSpace(t.Prompt) == "" &&
+			t.Update.Message.Sticker != nil {
+			t.Prompt = i18n.GetMessage("sticker_prompt", nil)
+		}
+		// a sticker that could not be converted (animated .tgs, video .webm,
+		// oversized or failed download) carries no text at all — hint
+		// instead of dropping the message silently
+		if t.Update.Message.Sticker != nil && len(t.ImageContent) == 0 &&
+			strings.TrimSpace(t.Prompt) == "" {
+			t.Robot.SendMsg(chatId, i18n.GetMessage("sticker_unsupported", nil), msgId, "", nil)
+			return false
+		}
 		t.DocContent = t.GetDocumentContent()
 		t.AudioContent = t.GetAudioContent()
 		var err error
@@ -321,7 +338,7 @@ func (t *TelegramRobot) skipThisMsg() bool {
 	if t.Update.Message.Chat.Type == "private" {
 		if strings.TrimSpace(t.getMsgContent()) == "" &&
 			t.Update.Message.Voice == nil && t.Update.Message.Photo == nil &&
-			t.Update.Message.Document == nil {
+			t.Update.Message.Document == nil && t.Update.Message.Sticker == nil {
 			return true
 		}
 
@@ -918,6 +935,11 @@ func (t *TelegramRobot) ExecuteForceReply() {
 		t.Robot.sendMultiAgent(t.sendForceReply("task_empty_content"))
 	case i18n.GetMessage("mcp_empty_content", nil):
 		t.Robot.sendMultiAgent(t.sendForceReply("task_empty_content"))
+	default:
+		// Replying to an ordinary bot message is not an answer to a ForceReply
+		// prompt. Without this fallback the switch matched nothing and the
+		// message was dropped silently, so replying to the bot never worked.
+		t.sendChatMessage()
 	}
 }
 
@@ -943,7 +965,16 @@ func (t *TelegramRobot) GetAudioContent() []byte {
 }
 
 func (t *TelegramRobot) GetPhotoContent() []byte {
-	if t.Update.Message == nil || t.Update.Message.Photo == nil {
+	if t.Update.Message == nil {
+		return nil
+	}
+
+	// static stickers are WebP images, convert them so the vision models can
+	// read them; animated (.tgs) and video (.webm) stickers are skipped
+	if t.Update.Message.Photo == nil {
+		if sticker := t.Update.Message.Sticker; sticker != nil {
+			return t.getStickerContent(sticker)
+		}
 		return nil
 	}
 
@@ -970,6 +1001,53 @@ func (t *TelegramRobot) GetPhotoContent() []byte {
 	}
 
 	return photoContent
+}
+
+// getStickerContent downloads a static sticker and converts it to PNG.
+// Animated (.tgs) and video (.webm) stickers cannot be read by vision models,
+// so they are dropped with a warning instead of failing the whole message.
+func (t *TelegramRobot) getStickerContent(sticker *tgbotapi.Sticker) []byte {
+	// tgbotapi v5 has no IsVideo field, so video stickers are recognised from
+	// the downloaded bytes instead of from the message
+	if sticker.IsAnimated {
+		logger.WarnCtx(t.Robot.Ctx, "animated sticker not supported", "emoji", sticker.Emoji)
+		return nil
+	}
+	if sticker.FileSize > 8*1024*1024 {
+		logger.WarnCtx(t.Robot.Ctx, "sticker too large", "size", sticker.FileSize)
+		return nil
+	}
+
+	file, err := t.Bot.GetFile(tgbotapi.FileConfig{FileID: sticker.FileID})
+	if err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "get sticker file fail", "err", err)
+		return nil
+	}
+
+	content, err := utils.DownloadFile(file.Link(t.Bot.Token))
+	if err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "download sticker fail", "err", err)
+		return nil
+	}
+
+	if isVideoSticker(content) {
+		logger.WarnCtx(t.Robot.Ctx, "video sticker not supported", "emoji", sticker.Emoji)
+		return nil
+	}
+
+	pngContent, err := utils.WebPToPNG(content)
+	if err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "convert sticker to png fail", "err", err)
+		return nil
+	}
+	return pngContent
+}
+
+// isVideoSticker reports whether content is a WebM container, which is what
+// Telegram uses for video stickers. WebP files start with "RIFF" instead.
+func isVideoSticker(content []byte) bool {
+	return len(content) >= 4 && content[0] == 0x1A && content[1] == 0x45 &&
+		content[2] == 0xDF && content[3] == 0xA3
 }
 
 // GetDocumentContent downloads the document attachment of the message.
@@ -1033,6 +1111,12 @@ func (t *TelegramRobot) sendForceReply(agentType string) func() {
 }
 
 func ForceReply(chatId int64, msgId int, i18MsgId string, bot *tgbotapi.BotAPI) error {
+	if chatId == 0 {
+		// synthetic updates (e.g. cron replay with an unparseable target id)
+		// have no chat to reply to; Telegram would just answer
+		// "Bad Request: chat_id is empty"
+		return nil
+	}
 	msg := tgbotapi.NewMessage(chatId, i18n.GetMessage(i18MsgId, nil))
 	msg.ReplyMarkup = tgbotapi.ForceReply{
 		ForceReply: true,
@@ -1116,4 +1200,77 @@ func (t *TelegramRobot) sendVoiceContent(voiceContent []byte, duration int) erro
 
 func (t *TelegramRobot) getPerMsgLen() int {
 	return 3596
+}
+
+func init() {
+	RegisterChannel(Channel{
+		Name: param.Telegram,
+		MissingCfg: func() []string {
+			return required(nil, "TELEGRAM_BOT_TOKEN", conf.BaseConfInfo.TelegramBotToken)
+		},
+		Start: StartTelegramRobot,
+	})
+}
+
+// telegramReactionEmoji maps turn statuses to reactions Telegram allows
+// bots to set (fixed whitelist; 👀/👍/😢 are all in it).
+var telegramReactionEmoji = map[string]string{
+	ReactionWorking: "👀",
+	ReactionOK:      "👍",
+	ReactionError:   "😢",
+}
+
+// react mirrors the turn state on the user's message. tgbotapi v5 predates
+// setMessageReaction, so the Bot API call goes over HTTP on the bot's own
+// client; failures only warn, the turn itself is unaffected.
+func (t *TelegramRobot) react(status string) {
+	// cron replays build synthetic messages without a message id; there is
+	// nothing to attach a reaction to then
+	if t.Update.Message == nil || t.Update.Message.MessageID == 0 || t.Bot == nil {
+		return
+	}
+	emoji, ok := telegramReactionEmoji[status]
+	if !ok {
+		return
+	}
+
+	body, err := json.Marshal(map[string]interface{}{
+		"chat_id":    t.Update.Message.Chat.ID,
+		"message_id": t.Update.Message.MessageID,
+		"reaction":   []map[string]string{{"type": "emoji", "emoji": emoji}},
+	})
+	if err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "marshal setMessageReaction fail", "err", err)
+		return
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/setMessageReaction", t.Bot.Token)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "build setMessageReaction request fail", "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.Bot.Client.Do(req)
+	if err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "setMessageReaction fail", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logger.WarnCtx(t.Robot.Ctx, "setMessageReaction unexpected status", "code", resp.StatusCode)
+	}
+}
+
+// sendTyping keeps the chat's typing indicator alive while the LLM works.
+func (t *TelegramRobot) sendTyping() {
+	if t.Update.Message == nil || t.Bot == nil {
+		return
+	}
+	// Request (not Send): sendChatAction answers {"ok":true,"result":true},
+	// which Send cannot decode into tgbotapi.Message
+	if _, err := t.Bot.Request(tgbotapi.NewChatAction(t.Update.Message.Chat.ID, tgbotapi.ChatTyping)); err != nil {
+		logger.WarnCtx(t.Robot.Ctx, "send typing action fail", "err", err)
+	}
 }

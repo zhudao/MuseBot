@@ -60,6 +60,10 @@ type RobotInfo struct {
 	Cancel context.CancelFunc
 	Robot  Robot
 
+	// turnFailed marks the current LLM turn as failed so the runLLM wrapper
+	// reports the error reaction; written only by ExecLLM's goroutine.
+	turnFailed bool
+
 	cs *param.ContextState
 }
 
@@ -212,8 +216,13 @@ func (r *RobotInfo) runLLM(robot Robot, audioFormat string, streaming bool) {
 		}
 	}
 
+	stop := r.startTurnSignals()
+
 	go r.HandleUpdate(msgChan, audioFormat)
-	go r.ExecLLM(robot.getPrompt(), msgChan)
+	go func() {
+		r.ExecLLM(robot.getPrompt(), msgChan)
+		r.finishTurnSignals(stop, r.turnFailed)
+	}()
 }
 
 type StreamRobot interface {
@@ -681,6 +690,14 @@ func (r *RobotInfo) SendMsg(chatId string, msgContent string, replyToMessageID s
 	return ""
 }
 
+func WithCtx(ctx context.Context) func(*RobotInfo) {
+	return func(r *RobotInfo) {
+		if ctx != nil {
+			r.Ctx = ctx
+		}
+	}
+}
+
 func WithRobot(robot Robot) func(*RobotInfo) {
 	return func(r *RobotInfo) {
 		r.Robot = robot
@@ -710,53 +727,7 @@ func StartRobot() {
 	RobotControl.Cancel = cancel
 	ctx = context.WithValue(ctx, "bot_name", conf.BaseConfInfo.BotName)
 
-	if conf.BaseConfInfo.TelegramBotToken != "" {
-		go func() {
-			StartTelegramRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.DiscordBotToken != "" {
-		go func() {
-			StartDiscordRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.LarkAPPID != "" && conf.BaseConfInfo.LarkAppSecret != "" {
-		go func() {
-			StartLarkRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.SlackBotToken != "" && conf.BaseConfInfo.SlackAppToken != "" {
-		go func() {
-			StartSlackRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.DingClientId != "" && conf.BaseConfInfo.DingClientSecret != "" {
-		go func() {
-			StartDingRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.ComWechatSecret != "" && conf.BaseConfInfo.ComWechatAgentID != "" && conf.BaseConfInfo.ComWechatEncodingAESKey != "" {
-		go func() {
-			StartComWechatRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.QQAppID != "" && conf.BaseConfInfo.QQAppSecret != "" {
-		go func() {
-			StartQQRobot(ctx)
-		}()
-	}
-
-	if conf.BaseConfInfo.WechatAppID != "" && conf.BaseConfInfo.WechatAppSecret != "" {
-		go func() {
-			StartWechatRobot()
-		}()
-	}
+	startChannels(ctx)
 }
 
 // checkUserAllow check use can use telegram bot or not
@@ -810,23 +781,10 @@ func (r *RobotInfo) checkUserTokenExceed(chatId string, msgId string, userId str
 }
 
 func (r *RobotInfo) GetAudioContent(audioContent []byte) (string, error) {
-	var answer string
-	var err error
-	var token = param.AudioTokenUsage
 	llmConf := db.GetCtxUserInfo(r.Ctx).LLMConfigRaw
 	t := utils.GetRecType(llmConf)
 	logger.InfoCtx(r.Ctx, "recognize audio", "type", t, "model", utils.GetUsingRecModel(t, llmConf.RecModel))
-	switch t {
-	case param.Vol:
-		answer, err = utils.FileRecognize(audioContent)
-	case param.OpenAi:
-		answer, err = llm.GenerateOpenAIText(r.Ctx, audioContent)
-	case param.Gemini:
-		answer, token, err = llm.GenerateGeminiText(r.Ctx, audioContent)
-	case param.Aliyun:
-		answer, token, err = llm.GenerateAliyunText(r.Ctx, audioContent)
-	}
-
+	answer, token, err := llm.RecognizeAudio(r.Ctx, audioContent)
 	if err != nil {
 		return "", err
 	}
@@ -1418,6 +1376,7 @@ func (r *RobotInfo) ExecLLM(msgContent string, msgChan *MsgChan) {
 
 	chatId, msgId, userId := r.GetChatIdAndMsgIdAndUserID()
 	content := r.Robot.getPrompt()
+	r.turnFailed = false
 
 	// a received document joins the conversation context: with a prompt the
 	// LLM answers it directly, a lone document gets analyzed automatically.
@@ -1428,6 +1387,7 @@ func (r *RobotInfo) ExecLLM(msgContent string, msgChan *MsgChan) {
 		docText, err := rag.ParseDocument(doc.FileName, bytes.NewReader(doc.Content))
 		if err != nil {
 			logger.ErrorCtx(r.Ctx, "parse document fail", "err", err)
+			r.turnFailed = true
 			r.SendMsg(chatId, i18n.GetMessage("doc_parse_fail",
 				map[string]interface{}{"err": err.Error()}), msgId, "", nil)
 			return
@@ -1498,11 +1458,18 @@ func (r *RobotInfo) ExecLLM(msgContent string, msgChan *MsgChan) {
 	err := llmClient.CallLLM()
 	if err != nil {
 		logger.ErrorCtx(r.Ctx, "get content fail", "err", err)
+		r.turnFailed = true
 		r.SendMsg(chatId, i18n.GetMessage("llm_request_fail", map[string]interface{}{
 			"retry": conf.BaseConfInfo.LLMRetryTimes,
 			"err":   err.Error(),
 		}), msgId, "", nil)
+		return
 	}
+
+	// consolidate long-term memories in the background once the turn is
+	// recorded; WithoutCancel keeps log_id/user_info values but survives the
+	// turn's ctx teardown.
+	go llm.MaybeConsolidateMemories(context.WithoutCancel(r.Ctx), userId)
 
 }
 
@@ -1909,6 +1876,7 @@ func (r *RobotInfo) smartMode() bool {
 		llm.WithMsgId(msgId),
 		llm.WithContent(smartModePrompt),
 		llm.WithContext(r.Ctx),
+		llm.WithUtilityModel(),
 		llm.WithImages([][]byte{
 			r.Robot.getImage(),
 		}),
