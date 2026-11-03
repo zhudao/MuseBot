@@ -410,6 +410,12 @@ excerpts in the existing search result format. This provider supports search;
 it does not add a page-fetch tool. Anonymous usage is subject to service limits,
 and errors are returned to the task without switching providers.
 
+To use [Outcrawl](https://outcrawl.ai) instead, set `WEB_SEARCH_PROVIDER=outcrawl`
+(or `-web_search_provider=outcrawl`) and put your key in `OUTCRAWL_API_KEY`. The
+task agent receives titles, source URLs and snippets in the same result format.
+Outcrawl needs an API key (there is a free tier of 1,000 credits a month). A
+missing key or an API error is returned to the task without switching providers.
+
 Use `default` to retain DuckDuckGo/Bing, or `disabled` to block built-in web
 search. Custom MCP servers and their tool settings are separate. Each `/task`
 or `/mcp` research run has its own opaque Parallel session identifier, reused by
@@ -421,8 +427,7 @@ Feel free to submit issues and pull requests to improve this bot. 🚀
 
 ## group
 
-telegram-group: https://t.me/+WtaMcDpaMOlhZTE1 , or you can have a try robot `Guanwushan_bot`.
-every body have **10000** token to try this bot, please give me a star!
+telegram-group: https://t.me/+WtaMcDpaMOlhZTE1 
 
 QQ群：1031411708
 
