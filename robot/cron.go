@@ -2,6 +2,7 @@ package robot
 
 import (
 	"context"
+	"errors"
 	"github.com/yincongcyincong/MuseBot/conf"
 
 	"encoding/json"
@@ -270,6 +271,13 @@ func ExecComWechat(ctx context.Context, c *db.Cron) {
 }
 
 func ExecTelegram(ctx context.Context, c *db.Cron) {
+	// like the other platforms: the telegram channel may be disabled or still
+	// retrying to connect, and checkValid dereferences Bot.Self — a nil bot
+	// here would panic this cron/webhook goroutine and take the process down
+	if TelegramBot == nil {
+		logger.ErrorCtx(ctx, "telegram bot client is nil")
+		return
+	}
 	for _, targetId := range strings.Split(c.TargetID, ",") {
 		targetId = strings.TrimSpace(targetId)
 		if targetId == "" {
@@ -354,6 +362,12 @@ func ExecWechat(ctx context.Context, c *db.Cron) {
 }
 
 func AddCron(cronInfo *db.Cron) error {
+	// InitCron creates the scheduler, chat side cron edits can get here before
+	// that happened; without a scheduler the row is stored but not scheduled
+	if Cron == nil {
+		return errors.New("cron scheduler is not ready yet")
+	}
+
 	cronJobId, err := Cron.AddFunc(cronInfo.CronSpec, func() {
 		ExecCron(cronInfo)
 	})
