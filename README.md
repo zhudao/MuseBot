@@ -33,6 +33,9 @@ Thanks to the Reddit community as well, even though a few of my subreddits got b
 
 - 🤖 **AI Responses**: Uses LLM API for chatbot replies.
 - ⏳ **Streaming Output**: Sends responses in real-time to improve user experience.
+- 🧠 **Long-term Memory**: remembers user facts across conversations and injects them into context; accumulated history
+  auto-compresses when it grows too long, see [advanced config](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/advanced.md).
+- 💬 **Chat Experience**: typing indicator while the LLM generates and message reactions on completion (supported platforms).
 - 🏗 **Easy Deployment**: Run locally or deploy to a cloud server.
 - 👀 **Identify Image**: use image to communicate with LLM,
   see [doc](https://github.com/yincongcyincong/MuseBot/blob/main/static/doc/imageconf.md).
@@ -167,7 +170,6 @@ If you use parameter. Please use lower letter and underscore. for example: ./Mus
 | **LARK_APP_SECRET**             | Lark (Feishu) App Secret                                                                     | -                                                      |
 | **DING_CLIENT_ID**              | DingTalk App Key / Client ID                                                                 | -                                                      |
 | **DING_CLIENT_SECRET**          | DingTalk App Secret                                                                          | -                                                      |
-| **DING_TEMPLATE_ID**            | DingTalk template message ID                                                                 | -                                                      |
 | **COM_WECHAT_TOKEN**            | WeCom (Enterprise WeChat) token                                                              | -                                                      |
 | **COM_WECHAT_ENCODING_AES_KEY** | WeCom EncodingAESKey                                                                         | -                                                      |
 | **COM_WECHAT_CORP_ID**          | WeCom CorpID                                                                                 | -                                                      |
@@ -369,7 +371,7 @@ the MuseBotAdmin management platform. Both restart automatically if they crash.
 
 1. **Build the Docker image**
    ```sh
-    docker build -t MuseBot .
+    docker build -t musebot .
    ```
 
 2. **Run the container**
@@ -378,7 +380,7 @@ the MuseBotAdmin management platform. Both restart automatically if they crash.
        -e TELEGRAM_BOT_TOKEN="telegram-bot-token" \
        -e DEEPSEEK_TOKEN="deepseek-auth-token" \
        -p 36060:36060 -p 18080:18080 \
-       --name my-bot MuseBot
+       --name my-bot musebot
    ```
 
 3. **Ports and volumes**
